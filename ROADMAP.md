@@ -1426,30 +1426,91 @@ code" is not an acceptable default for anything, however good the model is.
       targets, but would need splitting for a fix touching widely
       separated parts of a large file).
 
-## 25. AI-assisted natural-language scaffolding
+## 25. AI-assisted natural-language scaffolding — ✅ DONE (2026-08-06)
 
 Motivation: the flip side of autoheal - instead of fixing broken code,
 generate a starting project from a plain description, composing existing
 cmaker building blocks (templates, `--with-rust`/`--with-zig`, §17
 packages) rather than generating arbitrary code from scratch.
 
-- [ ] `cmaker new myproj --describe "a REST API with a Postgres client and
-      JWT auth"` - the model's job is narrowly scoped to *selecting and
-      composing cmaker's existing primitives* (which template, which
-      `--with-*` flags, which §17 packages to `install`), not writing
-      arbitrary application logic - this keeps the blast radius of a bad
-      AI decision small (worst case: it picks a slightly wrong dependency
-      or template, not that it generates broken/insecure hand-rolled auth
-      code). Print exactly what it decided to do (as a plan) before
-      scaffolding, mirroring `heal`'s "show the diff first" safety
-      instinct.
-- [ ] Same provider/API-key design questions as §24 - these two features
-      should likely share one `internal/ai` package rather than each
-      rolling its own provider integration.
-- [ ] Depends on §17 (package registry) and §18 (domain+interop
-      composition) providing a rich-enough set of primitives for this to
-      have real, varied combinations worth composing - attempted too early,
-      it's just a fancy way to pick between `default` and `backend`.
+- [x] `cmaker new myproj --describe "a REST API backend that returns JSON,
+      written in C++"` (also on `init`/`create`) - new `internal/describe`
+      package. The model's job is narrowly scoped to *selecting from a
+      menu* of cmaker's actual templates/packages (given to it in the
+      prompt, not assumed) - it returns structured JSON
+      (`template`/`language`/`with_rust`/`with_zig`/`target_type`/
+      `packages`/`reasoning`), never code, the same "LLM proposes a
+      structured decision, cmaker's deterministic machinery executes it"
+      principle §19/§24 already established. Every field is validated
+      against the real template list, package registry, and known
+      language/target-type values before anything is scaffolded - an
+      unrecognized template/language fails clearly (not a silent guess),
+      an unrecognized package is quietly dropped, and (a real bug caught
+      by live testing, see below) a combination violating
+      `scaffoldProject`'s actual composition rules is normalized back to
+      something valid rather than failing the whole plan. The plan is
+      printed - template, flags, packages, and the model's own one-line
+      reasoning - before scaffolding proceeds.
+      `--describe` conflicts with `--template`/`--lang`/`--with-rust`/
+      `--with-zig`/`--target-type`/`--lib` (and `--backend`/`--ml` on
+      `create`) with a clear error, rather than silently overriding an
+      explicit flag.
+- [x] Provider integration: reused §19/§24's existing `internal/llm`
+      Anthropic client as-is (`llm.NewClientFromEnv`) - no new provider
+      package needed. This *is* the "share one integration, don't roll a
+      second" outcome this bullet asked for; it just turned out `internal/
+      llm` already was that shared piece by the time this section started,
+      rather than needing a rename/extraction into a differently-named
+      `internal/ai` package.
+- [x] **Deliberate departure from "mirror heal's gated --apply", with the
+      reasoning made explicit**: `cmaker heal` never writes to disk without
+      a future, separate `--apply` step, because it patches a user's
+      *existing* source. `--describe` scaffolds into a *new*, typically
+      empty directory - inherently low-risk and trivially reversible
+      (delete it, retry) - so it prints the plan and acts on it in one
+      command, the same shape every other `cmaker new` invocation already
+      has, rather than inventing a confirmation prompt found nowhere else
+      in the CLI.
+- Verified end-to-end against the real Anthropic API and real builds (not
+  mocked), across genuinely different descriptions to confirm real
+  selection rather than a hardcoded response: "a REST API backend that
+  returns JSON, written in C++" correctly planned `template=backend` +
+  `packages=[nlohmann-json]`, and the resulting project not only built but
+  its HTTP server was started and curled for real (`GET /` and `/health`
+  both responded correctly); "a small library that does 2D matrix math, no
+  dependencies... beyond the standard library" correctly planned
+  `template=headeronly`, built, and ran producing correct output. The
+  `--describe` vs. explicit-flag conflict guards were exercised on both
+  `new` and `create`. Unit tests (`internal/describe`, 10 cases) use a fake
+  `Completer` for deterministic coverage; a new
+  `cmd/integration_test.go` case (`TestIntegrationDescribeScaffoldBuildRun`,
+  skipped rather than failed when no `ANTHROPIC_API_KEY` is set, matching
+  `requireTool`'s policy for a missing binary) runs the same live
+  plan-then-build pipeline under `go test -tags=integration`.
+- **Real bug found + fixed via live testing, not assumed away**: the
+  prompt asks the model to keep `language`/`with_rust`/`with_zig`/
+  `target_type` at their defaults when it picks a non-`default` template,
+  but a live response picked `template=headeronly` together with
+  `target_type=static_library` anyway - a combination `scaffoldProject`
+  correctly rejects, which failed the *entire* plan over an auxiliary
+  field, not the actual template decision. Fixed by normalizing
+  `language`/`target_type` in Go to mirror `scaffoldProject`'s exact
+  composition rules, rather than trusting the model to have followed its
+  own instructions (same lesson `internal/codegen`/`internal/heal` already
+  learned from their own live-testing surprises). Caught a *second*,
+  subtler mistake while fixing the first: an initial fix over-corrected by
+  zeroing `with_rust`/`with_zig` for every non-default template, which
+  would have silently broken the exact `--backend --with-rust`
+  composition §18 exists to support - `--with-rust`/`--with-zig` compose
+  with *any* template and are correctly left untouched by the final
+  normalization; only `language`/`target_type` (and `target_type` when
+  combined with Rust/Zig specifically) are corrected. A dedicated
+  regression test locks in both the original bug and this narrower-scope
+  correction.
+- [ ] Not done, left open rather than silently dropped: no `--model`
+      override flag for `--describe` (heal/generate accessors both have
+      one; describe currently always uses the default model) - a small,
+      easy follow-up, just not in this pass's scope.
 
 ---
 

@@ -267,6 +267,46 @@ func TestIntegrationBuildLogCapture(t *testing.T) {
 	}
 }
 
+// TestIntegrationDescribeScaffoldBuildRun exercises §25's natural-language
+// scaffolding end to end against the real Anthropic API and a real build:
+// `--describe` should pick a real template/package combination, and the
+// resulting project should actually build. Skipped (not failed) when no
+// ANTHROPIC_API_KEY is available, same policy as requireTool for a missing
+// binary - this is a real network+API dependency, not something CI should
+// be expected to have by default.
+func TestIntegrationDescribeScaffoldBuildRun(t *testing.T) {
+	requireTool(t, "cmake")
+	requireEnv(t, "ANTHROPIC_API_KEY")
+
+	dir := t.TempDir()
+	root := filepath.Join(dir, "described")
+	if err := runDescribeAndScaffold(root, "described", "a REST API backend that returns JSON, written in C++", "", ""); err != nil {
+		t.Fatalf("runDescribeAndScaffold() error = %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "cmaker.yaml")); err != nil {
+		t.Fatalf("expected a scaffolded cmaker.yaml: %v", err)
+	}
+
+	buildDir := filepath.Join(root, "build")
+	configCmd := exec.Command("cmake", "-S", root, "-B", buildDir, cmake.PolicyVersionMinFlag)
+	if out, err := configCmd.CombinedOutput(); err != nil {
+		t.Fatalf("cmake configure failed: %v\n%s", err, out)
+	}
+	buildCmd := exec.Command("cmake", "--build", buildDir)
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("cmake build failed: %v\n%s", err, out)
+	}
+
+	binary := filepath.Join(buildDir, "main")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
+	if _, err := os.Stat(binary); err != nil {
+		t.Fatalf("expected binary at %s: %v", binary, err)
+	}
+}
+
 // TestIntegrationOnlyCompileRun exercises the `--only` ad hoc single-file
 // compile path (only.go) against a real compiler, without going through
 // cmake at all.
@@ -302,5 +342,12 @@ func requireTool(t *testing.T, name string) {
 	t.Helper()
 	if _, err := exec.LookPath(name); err != nil {
 		t.Skipf("%s not found on PATH, skipping integration test", name)
+	}
+}
+
+func requireEnv(t *testing.T, name string) {
+	t.Helper()
+	if os.Getenv(name) == "" {
+		t.Skipf("%s not set, skipping integration test", name)
 	}
 }

@@ -21,12 +21,23 @@ var createCmd = &cobra.Command{
 }
 
 func init() {
-	template, lang, compiler, withRust, withZig, runner, targetType, lib := newScaffoldFlags(createCmd)
+	template, lang, compiler, withRust, withZig, runner, targetType, lib, describeFlag := newScaffoldFlags(createCmd)
 	backend := createCmd.Flags().Bool("backend", false, "shorthand for --template=backend (a cpp-httplib HTTP service, see ROADMAP.md §13)")
 	ml := createCmd.Flags().Bool("ml", false, "shorthand for --template=ml-eigen (an Eigen linear-algebra starter, see ROADMAP.md §13)")
 
 	createCmd.RunE = func(cmd *cobra.Command, args []string) error {
 		name := args[0]
+
+		if *describeFlag != "" {
+			if err := describeConflictsWithExplicitFlags(cmd); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("backend") || cmd.Flags().Changed("ml") {
+				return fmt.Errorf("--describe picks the template for you - remove --backend/--ml or drop --describe")
+			}
+			return runDescribeAndScaffold(name, name, *describeFlag, *compiler, *runner)
+		}
+
 		selectedTemplate := *template
 
 		switch {

@@ -41,6 +41,7 @@ Hello from Cmaker!
 - [Named configs (your own shortcuts)](#named-configs-your-own-shortcuts)
 - [Code generation (`generate accessors`)](#code-generation-generate-accessors)
 - [Build/run logs and AI-assisted healing (`cmaker logs` / `cmaker heal`)](#buildrun-logs-and-ai-assisted-healing-cmaker-logs--cmaker-heal)
+- [Natural-language scaffolding (`--describe`)](#natural-language-scaffolding---describe)
 - [The interactive dashboard (TUI)](#the-interactive-dashboard-tui)
 - [Shell completions](#shell-completions)
 - [Global flags](#global-flags)
@@ -686,6 +687,54 @@ follow-up — see `ROADMAP.md` §24. v1 only ever suggests.
 
 ---
 
+## Natural-language scaffolding (`--describe`)
+
+The flip side of `cmaker heal`: instead of fixing broken code, describe a
+project in plain English and let an LLM pick which of cmaker's *existing*
+building blocks fit it — template, `--with-rust`/`--with-zig`, and
+[§17 packages](#package-install-a-real-dependency-manager-ux) to install:
+
+```bash
+cmaker new myapi --describe "a REST API backend that returns JSON, written in C++"
+```
+
+```
+-- Asking claude-haiku-4-5-20251001 to plan a project for: "a REST API backend that returns JSON, written in C++"
+-- Plan: template=backend language=cpp with_rust=false with_zig=false target_type=executable
+-- Packages: nlohmann-json
+-- Reasoning: The backend template provides cpp-httplib for HTTP request handling, and
+   nlohmann-json is the standard for JSON serialization/deserialization in C++...
+-- Initializing myapi (Template: backend, Language: cpp)...
+-- Installing planned package "nlohmann-json"...
+```
+
+The model's job is narrowly **selecting from a menu**, never writing code —
+the same principle `generate accessors` and `cmaker heal` already use. This
+keeps the blast radius of a bad decision small: worst case, it picks a
+slightly wrong template or package (delete the directory and try again),
+never that it generates hand-rolled, unreviewed application logic. Every
+field it returns is validated against cmaker's real template list, package
+registry, and known language/target-type values before anything is
+scaffolded — an unrecognized template/language fails clearly rather than
+guessing, an unrecognized package is quietly dropped, and a combination
+that violates `cmaker.yaml`'s actual composition rules (e.g. a library
+`target_type` picked alongside a non-`default` template) is normalized
+back to something valid rather than failing the whole plan over one field.
+
+`--describe` conflicts with `--template`/`--lang`/`--with-rust`/
+`--with-zig`/`--target-type`/`--lib`/`--backend`/`--ml` — it picks all of
+those for you, so combining it with an explicit one is a clear error
+rather than a silent override. Works on `cmaker new`, `cmaker init`, and
+`cmaker create`. Requires `ANTHROPIC_API_KEY`.
+
+Unlike `cmaker heal`, there's no separate `--apply` step: the plan is
+printed and then acted on in one command, matching how every other
+`cmaker new` invocation already behaves — scaffolding into a fresh
+directory is inherently low-risk and trivially reversible, unlike patching
+a user's existing source.
+
+---
+
 ## The interactive dashboard (TUI)
 
 Run bare `cmaker` inside a terminal (with no subcommand) and you get a
@@ -744,11 +793,12 @@ Scaffold a new project into `./<name>` (defaults to `MyProject` if omitted).
 - `--template string` — project template (default `"default"`)
 - `--lang string` — `cpp`, `c`, or `hybrid` (default `"cpp"`; only with `--template=default`)
 - `--compiler string` — compiler to save into `cmaker.yaml`
-- `--with-rust` — add a Rust crate (only with `--template=default`)
-- `--with-zig` — add a Zig library (only with `--template=default`)
+- `--with-rust` — add a Rust crate, linked into whichever template you pick (see [above](#rust-and-zig-interop))
+- `--with-zig` — add a Zig library, linked into whichever template you pick (see [above](#rust-and-zig-interop))
 - `--with string` — always run this project via a custom compile-and-run tool (e.g. `crun`), saved as `runner:` in `cmaker.yaml` (see [above](#using-a-custom-compile-and-run-tool-eg-crun))
 - `--lib` — shorthand for `--target-type=static_library` (see [above](#library-project-targets); only with `--template=default`, cpp)
 - `--target-type string` — `executable`, `static_library`, or `shared_library` (default `"executable"`; only with `--template=default`, cpp)
+- `--describe string` — describe the project in plain English and let an LLM pick the rest for you (see [above](#natural-language-scaffolding---describe); conflicts with the other scaffold flags)
 </details>
 
 <details>

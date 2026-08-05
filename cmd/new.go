@@ -16,7 +16,7 @@ import (
 	tmpl "cmaker/internal/templates"
 )
 
-func newScaffoldFlags(c *cobra.Command) (template *string, lang *string, compiler *string, withRust *bool, withZig *bool, runner *string, targetType *string, lib *bool) {
+func newScaffoldFlags(c *cobra.Command) (template *string, lang *string, compiler *string, withRust *bool, withZig *bool, runner *string, targetType *string, lib *bool, describeFlag *string) {
 	template = c.Flags().String("template", "default", "project template to use (see 'cmaker templates')")
 	lang = c.Flags().String("lang", "cpp", "project language: cpp, c, or hybrid (only supported with --template=default)")
 	compiler = c.Flags().String("compiler", "", "compiler to use, saved into cmaker.yaml (e.g. clang++-17, or 'zig' to use zig as the C/C++ compiler)")
@@ -25,7 +25,22 @@ func newScaffoldFlags(c *cobra.Command) (template *string, lang *string, compile
 	runner = c.Flags().String("with", "", "custom compile-and-run tool to always use for 'cmaker run' in this project (e.g. crun), saved into cmaker.yaml's 'runner'")
 	targetType = c.Flags().String("target-type", "executable", "target type: executable, static_library, or shared_library (only supported with --template=default, cpp)")
 	lib = c.Flags().Bool("lib", false, "shorthand for --target-type=static_library")
+	describeFlag = c.Flags().String("describe", "", "describe the project in plain English and let an LLM pick the template/flags/packages for you (requires ANTHROPIC_API_KEY; conflicts with --template/--lang/--with-rust/--with-zig/--target-type/--lib)")
 	return
+}
+
+// describeConflictsWithExplicitFlags reports an error if --describe was
+// combined with any flag it's meant to decide for the caller - conflicting
+// silently-overridden flags would be confusing, so this fails loudly
+// instead (mirrors create.go's --backend/--ml vs --template conflict
+// check).
+func describeConflictsWithExplicitFlags(cmd *cobra.Command) error {
+	for _, name := range []string{"template", "lang", "with-rust", "with-zig", "target-type", "lib"} {
+		if cmd.Flags().Changed(name) {
+			return fmt.Errorf("--describe picks --%s (and the other scaffold flags) for you - remove --%s or drop --describe", name, name)
+		}
+	}
+	return nil
 }
 
 var newCmd = &cobra.Command{
@@ -41,22 +56,34 @@ var initCmd = &cobra.Command{
 }
 
 func init() {
-	newTemplate, newLang, newCompiler, newWithRust, newWithZig, newRunner, newTargetType, newLib := newScaffoldFlags(newCmd)
+	newTemplate, newLang, newCompiler, newWithRust, newWithZig, newRunner, newTargetType, newLib, newDescribe := newScaffoldFlags(newCmd)
 	newCmd.RunE = func(cmd *cobra.Command, args []string) error {
 		name := "MyProject"
 		if len(args) == 1 {
 			name = args[0]
 		}
+		if *newDescribe != "" {
+			if err := describeConflictsWithExplicitFlags(cmd); err != nil {
+				return err
+			}
+			return runDescribeAndScaffold(name, name, *newDescribe, *newCompiler, *newRunner)
+		}
 		return scaffoldProject(name, name, *newTemplate, *newLang, *newCompiler, *newWithRust, *newWithZig, *newRunner, resolveTargetType(*newTargetType, *newLib))
 	}
 
-	initTemplate, initLang, initCompiler, initWithRust, initWithZig, initRunner, initTargetType, initLib := newScaffoldFlags(initCmd)
+	initTemplate, initLang, initCompiler, initWithRust, initWithZig, initRunner, initTargetType, initLib, initDescribe := newScaffoldFlags(initCmd)
 	initCmd.RunE = func(cmd *cobra.Command, args []string) error {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("failed to determine current directory: %w", err)
 		}
 		name := filepath.Base(cwd)
+		if *initDescribe != "" {
+			if err := describeConflictsWithExplicitFlags(cmd); err != nil {
+				return err
+			}
+			return runDescribeAndScaffold(".", name, *initDescribe, *initCompiler, *initRunner)
+		}
 		return scaffoldProject(".", name, *initTemplate, *initLang, *initCompiler, *initWithRust, *initWithZig, *initRunner, resolveTargetType(*initTargetType, *initLib))
 	}
 }
