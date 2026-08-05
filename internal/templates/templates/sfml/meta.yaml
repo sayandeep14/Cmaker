@@ -1,0 +1,12 @@
+name: sfml
+description: SFML 2D game/graphics window, fetched automatically via CPM.cmake
+cpp_version: 17
+dependencies:
+  - name: SFML
+    repo: SFML/SFML
+    tag: 2.6.1
+    link: [sfml-graphics, sfml-window, sfml-system]
+    options:
+      - "SFML_BUILD_EXAMPLES OFF"
+      - "SFML_BUILD_AUDIO OFF"
+      - "SFML_BUILD_NETWORK OFF"

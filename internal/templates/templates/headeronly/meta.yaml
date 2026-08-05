@@ -1,0 +1,3 @@
+name: headeronly
+description: Header-only library skeleton (include/ + a demo consumer in src/), no dependencies
+cpp_version: 17

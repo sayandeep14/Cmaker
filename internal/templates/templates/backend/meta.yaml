@@ -1,0 +1,9 @@
+name: backend
+description: Minimal C++ HTTP backend service using cpp-httplib, fetched via CPM
+cpp_version: 17
+dependencies:
+  - name: httplib
+    repo: yhirose/cpp-httplib
+    tag: v0.15.3
+    link:
+      - httplib::httplib

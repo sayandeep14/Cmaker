@@ -1,0 +1,18 @@
+name: ml-eigen
+description: Numerics/ML building block using Eigen (linear algebra), fetched via CPM
+cpp_version: 17
+dependencies:
+  - name: eigen
+    repo: https://gitlab.com/libeigen/eigen.git
+    tag: 3.4.0
+    download_only: true
+link_libraries:
+  - Eigen
+cmake_extra: |
+  # Eigen's own CMakeLists.txt is geared for building Eigen's own tests/docs,
+  # not for being add_subdirectory'd by a consumer - so it's fetched with
+  # DOWNLOAD_ONLY and wrapped in a plain INTERFACE target instead.
+  if(eigen_ADDED)
+    add_library(Eigen INTERFACE IMPORTED)
+    target_include_directories(Eigen INTERFACE ${eigen_SOURCE_DIR})
+  endif()

@@ -1,0 +1,10 @@
+name: raylib
+description: raylib window + game loop, fetched automatically via CPM.cmake
+cpp_version: 17
+dependencies:
+  - name: raylib
+    repo: raysan5/raylib
+    tag: 5.0
+    link: [raylib]
+    options:
+      - "BUILD_EXAMPLES OFF"

@@ -1,0 +1,3 @@
+name: default
+description: Minimal hello-world C++ executable, no dependencies
+cpp_version: 26

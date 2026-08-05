@@ -1,0 +1,70 @@
+# goreleaser config for cmaker cross-platform releases.
+#
+# Local validation (no GitHub token / release needed):
+#   goreleaser check
+#   goreleaser build --snapshot --clean
+#
+# A real `goreleaser release` additionally needs:
+#   - a pushed git tag (vX.Y.Z)
+#   - GITHUB_TOKEN set
+#   - the `brews.repository.owner` placeholder below updated to a real
+#     GitHub org/user that owns a `homebrew-tap` repo (not yet created -
+#     this project has no GitHub remote yet, see ROADMAP.md §8)
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - ./scripts/completions.sh
+
+builds:
+  - id: cmaker
+    main: .
+    binary: cmaker
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: cmaker
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - completions/*
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+homebrew_casks:
+  - name: cmaker
+    repository:
+      # Placeholder - this project has no GitHub remote yet. Update to a
+      # real owner/tap-repo before running a real `goreleaser release`.
+      owner: YOUR_GITHUB_USERNAME
+      name: homebrew-tap
+    directory: Casks
+    homepage: "https://github.com/YOUR_GITHUB_USERNAME/cmaker"
+    description: "cmaker scaffolds, configures, and builds CMake-based C++ projects"
+    license: "MIT"
+    completions:
+      bash: completions/cmaker.bash
+      zsh: completions/cmaker.zsh
+      fish: completions/cmaker.fish
