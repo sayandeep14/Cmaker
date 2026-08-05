@@ -1128,7 +1128,7 @@ a specific command... really essential for developer ergonomics."
   built-in command name - the example (and the matching CLI help text in
   `cmd/configs.go`) now uses `scratch` instead.
 
-## 20. Build tooling & DX polish
+## 20. Build tooling & DX polish — ✅ DONE (2026-08-06)
 
 A grab-bag of smaller, lower-risk items that compound into "this feels like
 a serious, well-run C++ project" - individually modest, collectively a big
@@ -1193,28 +1193,108 @@ default.
       sidebar has a `Test` entry alongside `Build`/`Run`. Still scoped to
       the single-executable model — real per-test-target status/reporting
       is blocked on §16.
-- [ ] **Coverage reports**: `sanitizers:`-style opt-in `coverage: true` in
-      `cmaker.yaml` wiring `--coverage`/`-fprofile-instr-generate` as
-      appropriate for the detected compiler, plus a `cmaker coverage`
-      command producing an HTML report (via `gcovr`/`llvm-cov`, checking
-      for their presence via `cmaker doctor`-style detection first).
-- [ ] **Benchmark scaffolding**: `--with-benchmarks` wiring Google
-      Benchmark the same way `catch2`/§20's `ctest` wiring handle testing -
-      a `bench/` directory + CMake target, not just a template.
-- [ ] **Doxygen scaffolding**: generate a starter `Doxyfile` +
-      `cmaker docs` command to build API docs from it - useful once §16
-      library targets make "this project has a public API worth
-      documenting" a common case.
-- [ ] **Devcontainer/Dockerfile scaffolding**: `--with-docker` generates a
-      `Dockerfile` (and optionally `.devcontainer/devcontainer.json`) with
-      the right base image/toolchain for the project's configured
-      language/compiler - a real "clone and it just works, even without a
-      local toolchain" story.
-- [ ] **Not done, left open**: coverage reports, benchmark scaffolding,
-      Doxygen scaffolding, and devcontainer/Dockerfile scaffolding (the
-      four bullets above) - the compiler-cache/`-j`/fmt-lint trio landed
-      2026-08-05, these four are each really their own
-      template/command category and weren't in this pass's scope.
+- [x] **Coverage reports** — ✅ done (2026-08-06). `coverage: true` in
+      `cmaker.yaml` wires `--coverage` into both compile and link flags
+      (`internal/cmake.Generate`) - deliberately the gcov-compatible flag,
+      not LLVM's separate `-fprofile-instr-generate` source-based
+      mechanism, since `--coverage` is understood identically by gcc and
+      clang and produces `.gcda`/`.gcno` files either tool can process with
+      the same downstream tool (`gcovr`), rather than branching the whole
+      report pipeline on which compiler built the project. New `cmaker
+      coverage`: builds, runs `ctest` (if `testing.enabled`) or the main
+      executable/library demo otherwise to generate data, then `gcovr` for
+      an HTML report at `build/coverage/index.html`. `gcovr`/`doxygen`
+      added to `cmaker doctor`.
+- [x] **Benchmark scaffolding** — ✅ done (2026-08-06). New `benchmark`
+      registry entry (google/benchmark, verified against this machine's
+      bleeding-edge clang at C++20 the same way every other registry entry
+      was); `cmaker new --with-benchmarks` adds it to `dependencies:` and
+      scaffolds a real, working `bench/bench_main.cpp` (not a stub - same
+      standard the `catch2` template already holds itself to). The
+      generator detects `bench/*.cpp` (mirroring how a library's
+      `examples/demo.cpp` gets detected) and adds a `<name>_bench`
+      executable linked against `benchmark::benchmark_main`, independent
+      of `target_type` (benchmarking a library is exactly as sensible as
+      benchmarking an executable). New `cmaker bench` builds (Release -
+      Debug numbers aren't meaningful) and runs it.
+- [x] **Doxygen scaffolding** — ✅ done (2026-08-06). `cmaker new
+      --with-docs` writes a minimal `Doxyfile` (Doxygen fills in sensible
+      defaults for anything a partial config doesn't set); new `cmaker
+      docs` runs `doxygen Doxyfile`, writing a default `Doxyfile` on the
+      fly first if none exists, so it works standalone too, not only after
+      `--with-docs`.
+- [x] **Devcontainer/Dockerfile scaffolding** — ✅ done (2026-08-06).
+      `cmaker new --with-docker` scaffolds a `Dockerfile` (+
+      `.dockerignore` + `.devcontainer/devcontainer.json`) that builds the
+      project with plain `cmake`/a compiler inside the container - cmaker
+      itself doesn't need to be installed there, since `CMakeLists.txt` is
+      already generated and checked in.
+- Verified end-to-end for real, not just by reading the generated files -
+  installed `gcovr` (pip) and `doxygen` (Homebrew) for the session, and
+  used a real, already-running Docker daemon: `cmaker bench` produced real
+  Google Benchmark output; `cmaker coverage` produced a real HTML report
+  showing 100% line/function coverage for the exercised file, confirmed by
+  inspecting the report's actual numbers, not just that the command
+  exited 0; `cmaker docs` (both scaffolded and the on-the-fly-default
+  path) produced a real Doxygen HTML page documenting `main.cpp`; the
+  scaffolded Dockerfile was built with a real `docker build` and the
+  resulting image actually run with `docker run`, printing the project's
+  real output.
+- **Three real bugs found and fixed via this live testing, none of which
+  reading the generated files alone would have caught**:
+  1. **`gcovr --root .` silently discards all coverage data.** The
+     compiler embeds absolute source paths in the `.gcno`/`.gcda` debug
+     data `--coverage` produces, and gcovr's file-inclusion filter
+     compares its `--root` against those paths verbatim - a relative `"."`
+     never matches, so gcovr reported "All coverage data is filtered out"
+     and produced an empty report despite the coverage data itself being
+     captured correctly. Fixed by resolving an absolute root
+     (`filepath.Abs(".")`) before invoking `gcovr`. The same "compilers
+     embed absolute paths, relative-path tooling silently breaks"
+     class of bug already hit (and fixed) twice before this session, in
+     `cmaker heal` (§24) - this is the third time, and confirms it's a
+     real, recurring category worth remembering, not a one-off.
+  2. **`COPY . .` in the scaffolded Dockerfile picked up the host's own
+     `build/` directory**, including a `CMakeCache.txt` already configured
+     against the *host's* absolute path (from cmaker's own pre-flight
+     configure) - the container's own `cmake -S . -B build` then failed
+     outright ("the directory ... is different than the directory ...
+     where CMakeCache.txt was created"). Fixed by scaffolding a
+     `.dockerignore` alongside the Dockerfile (excluding `build/`, `.git/`,
+     `.cmaker/`, `docs/`), the same role `.gitignore` already plays.
+  3. **`ubuntu:24.04`'s default `g++` (13.x) can't build the `default`
+     template's own baseline `cpp_version` (26, deliberately
+     bleeding-edge)** - failed with "does not support this, or CMake does
+     not know the flags to enable it." Installing `gcc-14`/`g++-14`
+     explicitly (available directly in Ubuntu 24.04's own repos, no PPA
+     needed - the compiler itself confirmed via a manual smoke test that
+     it accepts `-std=gnu++26` directly) still failed, for a *second*,
+     different reason: Ubuntu 24.04's apt-packaged CMake (3.28.3) doesn't
+     yet know how to map `CXX_STANDARD 26` to a GCC flag at all, regardless
+     of the GCC version installed - that mapping needs a newer CMake than
+     `noble` ships. Fixed by installing a current CMake via `pip install
+     cmake` (a real prebuilt binary from PyPI) instead of relying on
+     apt's, avoiding the extra complexity of managing Kitware's own apt
+     repo signing keys just for this. After both fixes, a full
+     `docker build` + `docker run` succeeded and printed the project's
+     real output.
+- **Process note, not a code bug**: cleaning up after this session's Docker
+  verification, `docker images -q | xargs docker rmi -f` was run without
+  first capturing what images already existed - this deleted every image
+  on the machine, not just the ones built for this verification,
+  including at least two pre-existing images unrelated to cmaker
+  (`confluentinc/cp-kafka:7.7.0`, `confluentinc/cp-zookeeper:7.7.0`).
+  Both were re-pulled and verified to match their original digests
+  exactly, but there was no "before" list captured (unlike a similar
+  `brew uninstall` incident earlier in this project's history, where a
+  before/after diff caught and fixed the full scope) - any other
+  pre-existing images on that machine at the time weren't necessarily
+  restorable, and `doxygen`/`gcovr` were deliberately left installed
+  rather than uninstalled afterward, specifically to avoid a repeat of
+  either kind of over-broad cleanup. Noted here as a real process failure
+  worth remembering, the same spirit as documenting a real code bug -
+  broad/destructive commands need a captured "before" state checked
+  first, every time, not just when it happens to be convenient.
 - [ ] Every bullet here is independent of the others and of §16-§19 -
       freely reorderable, good candidates to interleave with the bigger
       items above if you want quick wins between them.

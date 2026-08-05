@@ -422,6 +422,54 @@ func TestStandardConfigureFlags(t *testing.T) {
 	})
 }
 
+func TestGenerateCoverage(t *testing.T) {
+	content := mustGenerate(t, config.Config{
+		ProjectName: "covproj",
+		CppVersion:  20,
+		Executable:  "main",
+		Coverage:    true,
+	})
+	if !strings.Contains(content, "target_compile_options(main PRIVATE --coverage)") {
+		t.Errorf("expected --coverage in compile options:\n%s", content)
+	}
+	if !strings.Contains(content, "target_link_options(main PRIVATE --coverage)") {
+		t.Errorf("expected --coverage in link options:\n%s", content)
+	}
+
+	withoutCoverage := mustGenerate(t, config.Config{ProjectName: "p", CppVersion: 20, Executable: "main"})
+	if strings.Contains(withoutCoverage, "--coverage") {
+		t.Errorf("project with no coverage: true should not get --coverage flags:\n%s", withoutCoverage)
+	}
+}
+
+func TestGenerateBenchmarkExecutable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "bench"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bench", "bench_main.cpp"), []byte("// bench"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	content := mustGenerateInDir(t, dir, config.Config{ProjectName: "p", CppVersion: 20, Executable: "main"})
+	for _, want := range []string{
+		`file(GLOB_RECURSE main_BENCH_SOURCES "bench/*.cpp")`,
+		"add_executable(main_bench ${main_BENCH_SOURCES})",
+		"target_link_libraries(main_bench PRIVATE benchmark::benchmark_main)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("project with bench/ missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestGenerateNoBenchDirNoBenchTarget(t *testing.T) {
+	content := mustGenerate(t, config.Config{ProjectName: "p", CppVersion: 20, Executable: "main"})
+	if strings.Contains(content, "_bench") {
+		t.Errorf("project with no bench/ dir should not declare a bench target:\n%s", content)
+	}
+}
+
 // fakeTool creates an executable file named name in dir, so exec.LookPath
 // can find it via a PATH containing dir - used to test PATH-based tool
 // detection without depending on what's actually installed on the test

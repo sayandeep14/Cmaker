@@ -55,6 +55,12 @@ var doctorTools = []tool{
 	{name: "clang-tidy", required: false, installs: map[string]string{
 		"darwin": "brew install llvm  (clang-tidy ships with it)", "linux": "sudo apt install clang-tidy", "windows": "install via LLVM releases",
 	}},
+	{name: "gcovr", required: false, installs: map[string]string{
+		"darwin": "pip install gcovr", "linux": "pip install gcovr  (or sudo apt install gcovr)", "windows": "pip install gcovr",
+	}},
+	{name: "doxygen", required: false, installs: map[string]string{
+		"darwin": "brew install doxygen", "linux": "sudo apt install doxygen", "windows": "choco install doxygen.install",
+	}},
 }
 
 var doctorCmd = &cobra.Command{

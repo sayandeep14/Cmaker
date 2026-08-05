@@ -21,24 +21,24 @@ var createCmd = &cobra.Command{
 }
 
 func init() {
-	template, lang, compiler, withRust, withZig, runner, targetType, lib, describeFlag := newScaffoldFlags(createCmd)
+	f := newScaffoldFlags(createCmd)
 	backend := createCmd.Flags().Bool("backend", false, "shorthand for --template=backend (a cpp-httplib HTTP service, see ROADMAP.md §13)")
 	ml := createCmd.Flags().Bool("ml", false, "shorthand for --template=ml-eigen (an Eigen linear-algebra starter, see ROADMAP.md §13)")
 
 	createCmd.RunE = func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 
-		if *describeFlag != "" {
+		if *f.Describe != "" {
 			if err := describeConflictsWithExplicitFlags(cmd); err != nil {
 				return err
 			}
 			if cmd.Flags().Changed("backend") || cmd.Flags().Changed("ml") {
 				return fmt.Errorf("--describe picks the template for you - remove --backend/--ml or drop --describe")
 			}
-			return runDescribeAndScaffold(name, name, *describeFlag, *compiler, *runner)
+			return runDescribeAndScaffold(name, name, *f.Describe, *f.Compiler, *f.Runner)
 		}
 
-		selectedTemplate := *template
+		selectedTemplate := *f.Template
 
 		switch {
 		case *backend && *ml:
@@ -48,10 +48,13 @@ func init() {
 		case *ml:
 			selectedTemplate = "ml-eigen"
 		}
-		if (*backend || *ml) && cmd.Flags().Changed("template") && *template != selectedTemplate {
-			return fmt.Errorf("--template=%s conflicts with --backend/--ml (which imply --template=%s)", *template, selectedTemplate)
+		if (*backend || *ml) && cmd.Flags().Changed("template") && *f.Template != selectedTemplate {
+			return fmt.Errorf("--template=%s conflicts with --backend/--ml (which imply --template=%s)", *f.Template, selectedTemplate)
 		}
 
-		return scaffoldProject(name, name, selectedTemplate, *lang, *compiler, *withRust, *withZig, *runner, resolveTargetType(*targetType, *lib))
+		if err := scaffoldProject(name, name, selectedTemplate, *f.Lang, *f.Compiler, *f.WithRust, *f.WithZig, *f.Runner, resolveTargetType(*f.TargetType, *f.Lib)); err != nil {
+			return err
+		}
+		return applyExtraScaffolding(name, name, *f.WithBenchmarks, *f.WithDocs, *f.WithDocker)
 	}
 }

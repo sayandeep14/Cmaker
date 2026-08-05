@@ -16,17 +16,32 @@ import (
 	tmpl "cmaker/internal/templates"
 )
 
-func newScaffoldFlags(c *cobra.Command) (template *string, lang *string, compiler *string, withRust *bool, withZig *bool, runner *string, targetType *string, lib *bool, describeFlag *string) {
-	template = c.Flags().String("template", "default", "project template to use (see 'cmaker templates')")
-	lang = c.Flags().String("lang", "cpp", "project language: cpp, c, or hybrid (only supported with --template=default)")
-	compiler = c.Flags().String("compiler", "", "compiler to use, saved into cmaker.yaml (e.g. clang++-17, or 'zig' to use zig as the C/C++ compiler)")
-	withRust = c.Flags().Bool("with-rust", false, "add a Rust crate wired into the build via cargo, linked into whichever template you pick")
-	withZig = c.Flags().Bool("with-zig", false, "add a Zig library wired into the build via zig build-lib, linked into whichever template you pick")
-	runner = c.Flags().String("with", "", "custom compile-and-run tool to always use for 'cmaker run' in this project (e.g. crun), saved into cmaker.yaml's 'runner'")
-	targetType = c.Flags().String("target-type", "executable", "target type: executable, static_library, or shared_library (only supported with --template=default, cpp)")
-	lib = c.Flags().Bool("lib", false, "shorthand for --target-type=static_library")
-	describeFlag = c.Flags().String("describe", "", "describe the project in plain English and let an LLM pick the template/flags/packages for you (requires ANTHROPIC_API_KEY; conflicts with --template/--lang/--with-rust/--with-zig/--target-type/--lib)")
-	return
+// scaffoldFlagSet holds every flag shared by `new`/`init`/`create` - a
+// struct rather than another positional return, since that list grew past
+// the point a 9+-value multi-return stays readable (see git history for
+// how many times this and scaffoldProject's own signature were extended
+// one value at a time).
+type scaffoldFlagSet struct {
+	Template, Lang, Compiler, Runner, TargetType, Describe *string
+	WithRust, WithZig, Lib                                 *bool
+	WithBenchmarks, WithDocs, WithDocker                   *bool
+}
+
+func newScaffoldFlags(c *cobra.Command) *scaffoldFlagSet {
+	f := &scaffoldFlagSet{}
+	f.Template = c.Flags().String("template", "default", "project template to use (see 'cmaker templates')")
+	f.Lang = c.Flags().String("lang", "cpp", "project language: cpp, c, or hybrid (only supported with --template=default)")
+	f.Compiler = c.Flags().String("compiler", "", "compiler to use, saved into cmaker.yaml (e.g. clang++-17, or 'zig' to use zig as the C/C++ compiler)")
+	f.WithRust = c.Flags().Bool("with-rust", false, "add a Rust crate wired into the build via cargo, linked into whichever template you pick")
+	f.WithZig = c.Flags().Bool("with-zig", false, "add a Zig library wired into the build via zig build-lib, linked into whichever template you pick")
+	f.Runner = c.Flags().String("with", "", "custom compile-and-run tool to always use for 'cmaker run' in this project (e.g. crun), saved into cmaker.yaml's 'runner'")
+	f.TargetType = c.Flags().String("target-type", "executable", "target type: executable, static_library, or shared_library (only supported with --template=default, cpp)")
+	f.Lib = c.Flags().Bool("lib", false, "shorthand for --target-type=static_library")
+	f.Describe = c.Flags().String("describe", "", "describe the project in plain English and let an LLM pick the template/flags/packages for you (requires ANTHROPIC_API_KEY; conflicts with --template/--lang/--with-rust/--with-zig/--target-type/--lib)")
+	f.WithBenchmarks = c.Flags().Bool("with-benchmarks", false, "add a bench/ directory wired to Google Benchmark (bench/*.cpp -> a <name>_bench executable, see 'cmaker bench')")
+	f.WithDocs = c.Flags().Bool("with-docs", false, "scaffold a Doxyfile ('cmaker docs' builds API docs from it)")
+	f.WithDocker = c.Flags().Bool("with-docker", false, "scaffold a Dockerfile + .devcontainer/devcontainer.json for building/running without a local toolchain")
+	return f
 }
 
 // describeConflictsWithExplicitFlags reports an error if --describe was
@@ -56,35 +71,41 @@ var initCmd = &cobra.Command{
 }
 
 func init() {
-	newTemplate, newLang, newCompiler, newWithRust, newWithZig, newRunner, newTargetType, newLib, newDescribe := newScaffoldFlags(newCmd)
+	newFlags := newScaffoldFlags(newCmd)
 	newCmd.RunE = func(cmd *cobra.Command, args []string) error {
 		name := "MyProject"
 		if len(args) == 1 {
 			name = args[0]
 		}
-		if *newDescribe != "" {
+		if *newFlags.Describe != "" {
 			if err := describeConflictsWithExplicitFlags(cmd); err != nil {
 				return err
 			}
-			return runDescribeAndScaffold(name, name, *newDescribe, *newCompiler, *newRunner)
+			return runDescribeAndScaffold(name, name, *newFlags.Describe, *newFlags.Compiler, *newFlags.Runner)
 		}
-		return scaffoldProject(name, name, *newTemplate, *newLang, *newCompiler, *newWithRust, *newWithZig, *newRunner, resolveTargetType(*newTargetType, *newLib))
+		if err := scaffoldProject(name, name, *newFlags.Template, *newFlags.Lang, *newFlags.Compiler, *newFlags.WithRust, *newFlags.WithZig, *newFlags.Runner, resolveTargetType(*newFlags.TargetType, *newFlags.Lib)); err != nil {
+			return err
+		}
+		return applyExtraScaffolding(name, name, *newFlags.WithBenchmarks, *newFlags.WithDocs, *newFlags.WithDocker)
 	}
 
-	initTemplate, initLang, initCompiler, initWithRust, initWithZig, initRunner, initTargetType, initLib, initDescribe := newScaffoldFlags(initCmd)
+	initFlags := newScaffoldFlags(initCmd)
 	initCmd.RunE = func(cmd *cobra.Command, args []string) error {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("failed to determine current directory: %w", err)
 		}
 		name := filepath.Base(cwd)
-		if *initDescribe != "" {
+		if *initFlags.Describe != "" {
 			if err := describeConflictsWithExplicitFlags(cmd); err != nil {
 				return err
 			}
-			return runDescribeAndScaffold(".", name, *initDescribe, *initCompiler, *initRunner)
+			return runDescribeAndScaffold(".", name, *initFlags.Describe, *initFlags.Compiler, *initFlags.Runner)
 		}
-		return scaffoldProject(".", name, *initTemplate, *initLang, *initCompiler, *initWithRust, *initWithZig, *initRunner, resolveTargetType(*initTargetType, *initLib))
+		if err := scaffoldProject(".", name, *initFlags.Template, *initFlags.Lang, *initFlags.Compiler, *initFlags.WithRust, *initFlags.WithZig, *initFlags.Runner, resolveTargetType(*initFlags.TargetType, *initFlags.Lib)); err != nil {
+			return err
+		}
+		return applyExtraScaffolding(".", name, *initFlags.WithBenchmarks, *initFlags.WithDocs, *initFlags.WithDocker)
 	}
 }
 

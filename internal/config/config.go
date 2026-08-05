@@ -43,6 +43,7 @@ type Config struct {
 	Testing          *TestingConfig    `yaml:"testing,omitempty"`        // opt-in ctest wiring for the main executable
 	DisableCcache    bool              `yaml:"disable_ccache,omitempty"` // opt out of the automatic ccache/sccache CMAKE_<LANG>_COMPILER_LAUNCHER wiring (on by default when either is found on PATH)
 	LogsKeep         int               `yaml:"logs_keep,omitempty"`      // how many .cmaker/logs/ build/run logs to retain before pruning (default 5, see internal/logs.DefaultKeep)
+	Coverage         bool              `yaml:"coverage,omitempty"`       // opt-in --coverage instrumentation (gcov-compatible, works with gcc and clang alike), consumed by 'cmaker coverage'
 }
 
 // RustConfig describes an optional Rust crate compiled via cargo and linked

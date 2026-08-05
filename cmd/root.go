@@ -107,6 +107,9 @@ func init() {
 	rootCmd.AddCommand(auditCmd)
 	rootCmd.AddCommand(logsCmd)
 	rootCmd.AddCommand(healCmd)
+	rootCmd.AddCommand(benchCmd)
+	rootCmd.AddCommand(coverageCmd)
+	rootCmd.AddCommand(docsCmd)
 }
 
 // SetVersion sets the version string cobra reports for the auto-generated

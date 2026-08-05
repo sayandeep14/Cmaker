@@ -34,3 +34,9 @@
   link: [GTest::gtest, GTest::gtest_main]
   options: ["INSTALL_GTEST OFF"]
   notes: Google's C++ testing and mocking framework
+- name: benchmark
+  repo: google/benchmark
+  default_tag: v1.9.5
+  link: [benchmark::benchmark_main]
+  options: ["BENCHMARK_ENABLE_TESTING OFF", "BENCHMARK_ENABLE_GTEST_TESTS OFF"]
+  notes: Google's microbenchmarking library (used by 'cmaker new --with-benchmarks')

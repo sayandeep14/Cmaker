@@ -153,11 +153,22 @@ func Generate(root string, c config.Config) error {
 	if len(c.Sanitizers) > 0 {
 		flags = append(flags, "-fsanitize="+strings.Join(c.Sanitizers, ","), "-fno-omit-frame-pointer")
 	}
+	// --coverage is understood identically by gcc and clang (unlike LLVM's
+	// separate -fprofile-instr-generate source-based mechanism) and emits
+	// gcov-compatible .gcda/.gcno files either way, which is what lets
+	// `cmaker coverage` use a single tool (gcovr) regardless of which
+	// compiler actually built the project.
+	if c.Coverage {
+		flags = append(flags, "--coverage")
+	}
 	if len(flags) > 0 {
 		fmt.Fprintf(&optsBuilder, "target_compile_options(%s PRIVATE %s)\n", c.Executable, strings.Join(flags, " "))
 	}
 	if len(c.Sanitizers) > 0 {
 		fmt.Fprintf(&optsBuilder, "target_link_options(%s PRIVATE -fsanitize=%s)\n", c.Executable, strings.Join(c.Sanitizers, ","))
+	}
+	if c.Coverage {
+		fmt.Fprintf(&optsBuilder, "target_link_options(%s PRIVATE --coverage)\n", c.Executable)
 	}
 
 	var extraBuilder strings.Builder
@@ -277,6 +288,18 @@ install(EXPORT %sTargets
 `, c.Executable, c.Executable, c.Executable, c.Executable, c.Executable, c.Executable)
 	}
 
+	// A bench/*.cpp directory (see cmd/extras.go's addBenchmarkScaffold,
+	// --with-benchmarks) gets its own always-linked executable target
+	// against Google Benchmark - orthogonal to targetType, unlike the demo
+	// executable above, since benchmarking a library vs. an executable
+	// project is equally sensible either way.
+	var benchBuilder strings.Builder
+	if matches, _ := filepath.Glob(filepath.Join(root, "bench", "*.cpp")); len(matches) > 0 {
+		benchName := c.Executable + "_bench"
+		fmt.Fprintf(&benchBuilder, "\nfile(GLOB_RECURSE %s_BENCH_SOURCES \"bench/*.cpp\")\nadd_executable(%s ${%s_BENCH_SOURCES})\ntarget_include_directories(%s PRIVATE include)\ntarget_link_libraries(%s PRIVATE benchmark::benchmark_main)\n",
+			c.Executable, benchName, c.Executable, benchName, benchName)
+	}
+
 	// extraBuilder (cmake_extra) is injected here, before the target
 	// declaration - custom targets it defines (e.g. an Eigen INTERFACE
 	// library wrapping a DOWNLOAD_ONLY dependency) must exist before
@@ -286,7 +309,7 @@ project(%s)
 %s
 %s%s%s%s%s%s%s%s%s%s%s%s`, c.ProjectName, stdBuilder.String(), depsBuilder.String(), rustPreamble.String(), zigPreamble.String(), extraBuilder.String(), globLine,
 		targetDeclLine, includeDirsLine, libs, rustLink.String(), zigLink.String(), optsBuilder.String(), testingBuilder.String())
-	content += demoBuilder.String() + installBuilder.String()
+	content += demoBuilder.String() + benchBuilder.String() + installBuilder.String()
 
 	return os.WriteFile(filepath.Join(root, "CMakeLists.txt"), []byte(content), 0644)
 }

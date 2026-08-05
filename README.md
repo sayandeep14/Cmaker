@@ -34,6 +34,7 @@ Hello from Cmaker!
 - [Compiler selection](#compiler-selection)
 - [Build speed: parallelism and compiler caching](#build-speed-parallelism-and-compiler-caching)
 - [Formatting and linting (`cmaker fmt` / `cmaker lint`)](#formatting-and-linting-cmaker-fmt--cmaker-lint)
+- [Coverage, benchmarks, docs, and Docker](#coverage-benchmarks-docs-and-docker)
 - [Sanitizers and warnings-as-errors](#sanitizers-and-warnings-as-errors)
 - [Testing (`ctest`)](#testing-ctest)
 - [Rust and Zig interop](#rust-and-zig-interop)
@@ -152,6 +153,7 @@ compiler: clang++-17         # optional override; omit to let CMake pick
 runner: crun                 # optional: custom compile-and-run tool for 'run --only' (see below)
 disable_ccache: false        # opt out of automatic ccache/sccache wiring (on by default when found)
 logs_keep: 5                 # how many .cmaker/logs/ build/run logs to retain (default 5)
+coverage: false               # opt-in --coverage instrumentation, consumed by 'cmaker coverage'
 sanitizers: [address, undefined]
 warnings_as_errors: true
 cmake_extra: |               # raw CMake, appended for anything the generator doesn't model
@@ -421,6 +423,71 @@ cmaker lint         # clang-tidy, using build/compile_commands.json
 
 `cmaker lint` needs `build/compile_commands.json` to exist — run `cmaker
 build` at least once first.
+
+---
+
+## Coverage, benchmarks, docs, and Docker
+
+Four more independent, opt-in pieces of build tooling.
+
+### Coverage (`cmaker coverage`)
+
+```yaml
+coverage: true
+```
+
+Add this to `cmaker.yaml`, then:
+
+```bash
+cmaker coverage
+```
+
+Builds with `--coverage` (gcov-compatible, works identically whether the
+project builds with gcc or clang), runs `ctest` if `testing.enabled` (or
+the main executable/library demo otherwise) to generate coverage data, and
+uses [gcovr](https://gcovr.com) to produce an HTML report at
+`build/coverage/index.html`. Requires `gcovr` (`cmaker doctor` checks for
+it).
+
+### Benchmarks (`--with-benchmarks` / `cmaker bench`)
+
+```bash
+cmaker new myproj --with-benchmarks
+cmaker bench
+```
+
+Scaffolds a real, working `bench/bench_main.cpp` (a
+[Google Benchmark](https://github.com/google/benchmark) example, not a
+stub) and wires it into the build as a `<name>_bench` executable —
+`cmaker bench` builds it (Release, since Debug numbers aren't meaningful)
+and runs it.
+
+### API docs (`--with-docs` / `cmaker docs`)
+
+```bash
+cmaker new myproj --with-docs
+cmaker docs
+```
+
+Scaffolds a minimal `Doxyfile` and builds `docs/html/index.html` from it
+via [Doxygen](https://www.doxygen.nl). `cmaker docs` also works without
+`--with-docs` having been used first — it writes a default `Doxyfile` on
+the fly if none exists.
+
+### Docker (`--with-docker`)
+
+```bash
+cmaker new myproj --with-docker
+docker build -t myproj .
+```
+
+Scaffolds a `Dockerfile` (+ `.dockerignore`, + a matching
+`.devcontainer/devcontainer.json`) that builds the project with plain
+`cmake`/a compiler inside the container — a real "clone and it just
+works, even without a local toolchain" story, verified end-to-end with a
+real `docker build` + `docker run`. cmaker itself doesn't need to be
+installed in the container, since `CMakeLists.txt` is already generated
+and checked in.
 
 ---
 
@@ -799,6 +866,9 @@ Scaffold a new project into `./<name>` (defaults to `MyProject` if omitted).
 - `--lib` — shorthand for `--target-type=static_library` (see [above](#library-project-targets); only with `--template=default`, cpp)
 - `--target-type string` — `executable`, `static_library`, or `shared_library` (default `"executable"`; only with `--template=default`, cpp)
 - `--describe string` — describe the project in plain English and let an LLM pick the rest for you (see [above](#natural-language-scaffolding---describe); conflicts with the other scaffold flags)
+- `--with-benchmarks` — add a `bench/` directory wired to Google Benchmark (see [above](#coverage-benchmarks-docs-and-docker))
+- `--with-docs` — scaffold a `Doxyfile` (see [above](#coverage-benchmarks-docs-and-docker))
+- `--with-docker` — scaffold a `Dockerfile` + devcontainer (see [above](#coverage-benchmarks-docs-and-docker))
 </details>
 
 <details>
@@ -873,10 +943,10 @@ Rebuilds and reruns automatically whenever files in `src/`, `include/`, or
 <summary><code>cmaker doctor</code></summary>
 
 Checks `cmake`/`make`/`ninja`/`clang++`/`g++`/`vcpkg`/`conan`/`ccache`/
-`sccache`/`clang-format`/`clang-tidy`, lists every detected compiler
-toolchain and whether a compiler cache is actively wired in, and — only if
-your project's `cmaker.yaml` declares it needs them — checks
-`cargo`/`rustc`/`zig` too.
+`sccache`/`clang-format`/`clang-tidy`/`gcovr`/`doxygen`, lists every
+detected compiler toolchain and whether a compiler cache is actively
+wired in, and — only if your project's `cmaker.yaml` declares it needs
+them — checks `cargo`/`rustc`/`zig` too.
 </details>
 
 <details>
@@ -894,6 +964,31 @@ Formats every tracked source file with `clang-format` (see
 Lints every tracked source file with `clang-tidy`, using
 `build/compile_commands.json` as its compilation database. Run `cmaker
 build` first if it doesn't exist yet.
+</details>
+
+<details>
+<summary><code>cmaker coverage</code></summary>
+
+Builds with `--coverage`, runs the project (or `ctest` if configured), and
+produces an HTML coverage report via `gcovr` (see
+[above](#coverage-benchmarks-docs-and-docker)). Requires `coverage: true`
+in `cmaker.yaml`.
+</details>
+
+<details>
+<summary><code>cmaker bench</code></summary>
+
+Builds (Release) and runs `bench/*.cpp` via Google Benchmark (see
+[above](#coverage-benchmarks-docs-and-docker)). Requires
+`--with-benchmarks` to have scaffolded a `bench/` directory first.
+</details>
+
+<details>
+<summary><code>cmaker docs</code></summary>
+
+Builds API documentation with Doxygen (see
+[above](#coverage-benchmarks-docs-and-docker)). Writes a default
+`Doxyfile` on the fly if none exists yet.
 </details>
 
 <details>
@@ -1017,7 +1112,10 @@ myapp/
 ├── build/                # cmake's build directory (safe to delete: cmaker clean)
 ├── .cmaker/logs/          # build/run log captures, gitignored (see 'cmaker logs'/'cmaker heal')
 ├── rust/                 # only if --with-rust
-└── zig/                  # only if --with-zig
+├── zig/                  # only if --with-zig
+├── bench/                # only if --with-benchmarks (see 'cmaker bench')
+├── Doxyfile              # only if --with-docs (see 'cmaker docs')
+└── Dockerfile            # only if --with-docker (+ .dockerignore, .devcontainer/)
 ```
 
 ---
