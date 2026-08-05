@@ -48,6 +48,7 @@ var menuItems = []menuItem{
 	{label: "Build", description: "cmake configure + build (Debug)", args: []string{"build", "--quiet"}},
 	{label: "Build (Release)", description: "cmake configure + build with -O3", args: []string{"build", "--release", "--quiet"}},
 	{label: "Run", description: "Build if needed, then run the executable", args: []string{"run", "--quiet"}},
+	{label: "Test", description: "Build, then run the project's ctest suite (needs 'testing: enabled' in cmaker.yaml)", args: []string{"test", "--quiet"}},
 	{label: "Clean", description: "Remove and recreate build/", args: []string{"clean", "--quiet"}},
 	{label: "Doctor", description: "Check the local toolchain", args: []string{"doctor"}},
 	{label: "Watch", description: "Auto rebuild + rerun on file changes (esc to stop)", args: []string{"watch", "--quiet"}},

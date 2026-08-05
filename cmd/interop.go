@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // writeInteropDemoMain writes the project's main source file to demonstrate
@@ -99,3 +100,53 @@ int main(void) {
     return 0;
 }
 `
+
+// injectInteropUsageHint is the non-default-template counterpart to
+// writeInteropDemoMain (§18): a domain template's src/main.cpp is real,
+// working service/demo code (an HTTP server, a linear-algebra example, ...)
+// that --with-rust/--with-zig must never overwrite the way the generic
+// 'default' template's placeholder main() gets overwritten. Instead, this
+// only ever appends - a real #include for each linked library (so the
+// template compiles with the crate genuinely available, not just present in
+// cmaker.yaml) plus a short comment showing how to call into it, inserted
+// right after the file's existing #include block rather than disturbing any
+// of the template's own code.
+func injectInteropUsageHint(root string, withRust, withZig bool) error {
+	path := filepath.Join(root, "src", "main.cpp")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read %s to add the Rust/Zig usage hint: %w", path, err)
+	}
+
+	var block strings.Builder
+	if withRust {
+		block.WriteString("#include \"rustlib.h\"\n")
+	}
+	if withZig {
+		block.WriteString("#include \"ziglib.h\"\n")
+	}
+	block.WriteString("\n// --- cmaker: linked native crate(s) available, see below ---\n")
+	if withRust {
+		block.WriteString("// Rust (rust/src/lib.rs) is linked into this target - call it like:\n")
+		block.WriteString("//   int sum = rust_add(2, 3);\n")
+	}
+	if withZig {
+		block.WriteString("// Zig (zig/src/lib.zig) is linked into this target - call it like:\n")
+		block.WriteString("//   int sum = zig_add(4, 5);\n")
+	}
+
+	lines := strings.Split(string(data), "\n")
+	insertAt := 0
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "#include") {
+			insertAt = i + 1
+		}
+	}
+
+	var out []string
+	out = append(out, lines[:insertAt]...)
+	out = append(out, strings.Split(strings.TrimRight(block.String(), "\n"), "\n")...)
+	out = append(out, lines[insertAt:]...)
+
+	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0644)
+}

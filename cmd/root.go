@@ -89,6 +89,7 @@ func init() {
 	rootCmd.AddCommand(templatesCmd)
 	rootCmd.AddCommand(buildCmd)
 	rootCmd.AddCommand(runCmd)
+	rootCmd.AddCommand(testCmd)
 	rootCmd.AddCommand(cleanCmd)
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(watchCmd)
@@ -96,6 +97,16 @@ func init() {
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(removeCmd)
 	rootCmd.AddCommand(configsCmd)
+	rootCmd.AddCommand(generateCmd)
+	rootCmd.AddCommand(installCmd)
+	rootCmd.AddCommand(uninstallCmd)
+	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(searchCmd)
+	rootCmd.AddCommand(fmtCmd)
+	rootCmd.AddCommand(lintCmd)
+	rootCmd.AddCommand(auditCmd)
+	rootCmd.AddCommand(logsCmd)
+	rootCmd.AddCommand(healCmd)
 }
 
 // SetVersion sets the version string cobra reports for the auto-generated

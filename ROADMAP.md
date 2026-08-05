@@ -107,16 +107,40 @@ planned fix, grouped by priority, so we can work through them one at a time.
       prints its first non-empty line by default (`firstLine()` helper) —
       `-v` is only needed for the full raw log, not just to learn *that*
       something failed.
-- [ ] Support multiple executables / library targets, not just one
-      hardcoded `Executable`. **Not done** — this is a real generator
-      restructure (targets become a list, `generateCMake` iterates), left
-      open; deferred because it doesn't block anything else on this
-      roadmap.
-- [ ] Support test targets (Catch2 / GoogleTest `ctest` wiring) as an
-      opt-in config section. **Not done** — the `catch2` *template* exists
-      (§4) and links Catch2, but there's no `enable_testing()`/
-      `add_test()`/`ctest` integration yet; running tests today just means
-      running the built executable directly.
+- [x] **Support library targets, not just one hardcoded executable** — ✅
+      done via §16 (2026-08-05): `target_type: executable |
+      static_library | shared_library` in `cmaker.yaml`, with a real
+      `add_library(... STATIC|SHARED ...)` branch in the generator. See
+      §16 for the full writeup. **Partial**: this covers "one target that
+      might be a library," not the fully general "arbitrary N executables"
+      case the original bullet also named - `cmake.Generate` still only
+      ever declares at most two targets (the library/executable itself,
+      plus its paired `<name>_demo` if `examples/*.cpp` exists), not an
+      arbitrary list. True multi-executable projects remain a real
+      generator restructure (targets become a list, `Generate` iterates),
+      left open - tracked as a new follow-up rather than silently dropped.
+- [x] **Support test targets (`ctest` wiring) as an opt-in config
+      section** — ✅ done (2026-08-05). `cmaker.yaml` gained `testing: {
+      enabled: true }` (`config.TestingConfig`, a nil-means-zero-cost
+      pointer like `rust`/`zig`); `cmake.Generate` emits `enable_testing()`
+      + `add_test(NAME <executable> COMMAND <executable>)` when set. New
+      `cmaker test` subcommand builds then runs `ctest --output-on-failure`,
+      forwarding ctest's own exit code, and fails fast with a clear message
+      if `testing.enabled` isn't set instead of surfacing ctest's own
+      "No tests were found!!!". The `catch2` template now sets
+      `testing: true` in its `meta.yaml` (new `Meta.Testing` field) so a
+      freshly scaffolded `catch2` project has `cmaker test` working
+      immediately. Also added to the TUI sidebar (`Test`, next to `Run`).
+      Verified end-to-end: scaffolded a real `catch2` project, `cmaker
+      test` built it, fetched Catch2 via CPM, and ran the real test
+      (passed); flipping the assertion to fail propagated ctest's
+      `--output-on-failure` detail and a non-zero exit code (8); a
+      `default`-template project (no `testing:` config) hit the fast
+      "no tests configured" error instead of `ctest`'s cryptic default.
+      **Scoped to today's single-executable model** (still doesn't do
+      dedicated test targets separate from the main executable — that's
+      real GoogleTest-style multi-target support, which needs §16's
+      library/multi-target work first).
 - [ ] `cmaker build`/`cmaker new` still don't pass `-j` to
       `cmake --build` (carried over from the §5 follow-up list, still
       unaddressed).
@@ -177,6 +201,22 @@ and CPM.cmake wiring in `generateCMake`.
       unconditionally passes `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`
       (`cmakePolicyVersionMinFlag` in `config.go`) to work around this —
       a no-op for projects that don't need it, a real fix for ones that do.
+- [x] **Real bug found + fixed (2026-08-05)**: `raylib` scaffolds were
+      reported as "not able to fetch from GitHub" - the actual cause is
+      that `CPMAddPackage` was doing a full-history git clone of the
+      dependency's repo, and raylib's is 516 MB / 60+ seconds to clone
+      even on a fast connection (vs. catch2/sfml/ml-eigen/backend's much
+      smaller repos, which is why only raylib was reported broken - a slow
+      or flaky connection turns that into a clone that times out or gets
+      interrupted, surfacing as "can't fetch"). `internal/cmake.Generate`
+      now emits `GIT_SHALLOW TRUE` on every `CPMAddPackage(...)` block.
+      Verified: a plain `git clone --depth 1 --branch 5.0` of raylib is
+      94 MB / ~6s vs. 516 MB / ~63s full clone; CMake's own git downloader
+      (`ExternalProject`'s shallow path always adds `--no-single-branch`
+      for tag-resolution correctness, so it isn't quite that minimal) still
+      cut it to ~272 MB, and a fresh `cmaker new --template=raylib` +
+      `cmake --build` completed end-to-end (full raylib compile, `main`
+      linked and runnable) in under a minute.
 - Verified end-to-end: `default`/`headeronly` build and run with no network
   (baseline regression check); `catch2` fetched Catch2 via CPM, built, and
   ran with tests passing; `raylib` fetched and configured successfully
@@ -766,7 +806,7 @@ front:
   Treat them as the "zig-as-compiler" of this phase: valuable, but
   deliberately sequenced last, after everything they'd build on is solid.
 
-## 16. Library project targets
+## 16. Library project targets — ✅ DONE (2026-08-05)
 
 Motivation: every template and every project today produces exactly one
 `add_executable`. A huge fraction of real C++ work *is* a library (to be
@@ -777,32 +817,83 @@ form of §3's still-open "multiple executables/library targets" item -
 solving it here retires that bullet rather than leaving it as a second,
 separate future refactor.
 
-- [ ] `cmaker.yaml`: `target_type: executable | static_library |
+- [x] `cmaker.yaml`: `target_type: executable | static_library |
       shared_library` (default `executable`, so every existing config
-      keeps working unchanged).
-- [ ] `cmaker new mylib --lib` (shorthand for `--target-type=static_library`)
-      and `--target-type=shared_library` for the explicit form. Scaffolds a
-      public/private header split (`include/mylib/*.h` vs `src/*.cpp`) since
-      that convention matters far more for a library than for an app.
-- [ ] `generateCMake`/`internal/cmake` needs a real branch on target type:
-      `add_library(... STATIC|SHARED ...)` instead of `add_executable`, plus
-      `target_include_directories(... PUBLIC ...)` (vs `PRIVATE` for apps) so
-      consumers linking against the library actually see its headers.
-- [ ] `cmaker run` on a library project doesn't make sense as-is - either
-      error with a clear message pointing at `cmaker build`, or (more
-      useful) support an optional `--with-demo`/`examples/` convention that
-      builds and runs a small consumer executable linked against the
-      library, so "does my library actually work" stays a one-command
-      answer.
-- [ ] `install()` rules (CMake's own install, not §17's package install) so
-      `cmake --install build` works for consumers who do want to install a
-      cmaker-built library system-wide, plus a basic
-      `<name>Config.cmake`/`find_package()` story so other CMake projects
-      (including other cmaker projects, via §17) can consume it cleanly.
-- [ ] Depends on nothing else in this list; this is the right item to start
-      v2 with, since §17-§19 all lean on it existing.
+      keeps working unchanged). New `config.TargetTypeOrDefault`
+      (mirrors `LanguageOrDefault`) and `ValidTargetTypes`, validated in
+      `config.Validate`.
+- [x] `cmaker new mylib --lib` (shorthand for `--target-type=static_library`)
+      and `--target-type=shared_library` for the explicit form (also on
+      `init`/`create`, via `newScaffoldFlags`). Scaffolds a real
+      public/private header split: `include/<name>/<name>.h` (public,
+      `PUBLIC`-visible to consumers) + `src/<name>.cpp` (implementation),
+      not a flat `include/` like an executable gets - see
+      `cmd/new.go`'s `writeLibrarySources`. The library's CMake target is
+      named after the project (`filepath.Base` of the scaffold name, to
+      stay a valid CMake target/directory name even when the name doubles
+      as a path, e.g. `cmaker new ./sub/mylib`), not the executable
+      default of `main`.
+- [x] `internal/cmake.Generate` branches on target type: `add_library(...
+      STATIC|SHARED ...)` instead of `add_executable`, and
+      `target_include_directories(... PUBLIC
+      $<BUILD_INTERFACE:...>/$<INSTALL_INTERFACE:...> ...)` instead of
+      `PRIVATE` - so a consumer sees the right include path whether it's
+      building against this project's source tree or an installed copy.
+- [x] `cmaker run` on a library project: **both options from the original
+      bullet landed, not just one**. `writeLibrarySources` also scaffolds
+      a real, working `examples/demo.cpp` consumer (not a stub - it
+      actually calls the library's public function); `Generate` detects
+      `examples/*.cpp` and adds a paired `<name>_demo` executable target
+      linked against the library, and `cmd/run.go`'s new
+      `runnableBinaryName` builds+runs that demo for `cmaker run`. A
+      library with no `examples/*.cpp` still gets the clear-error half of
+      the bullet: `"this is a static_library project - there's no
+      executable to run (use 'cmaker build' instead); add
+      examples/demo.cpp to also enable 'cmaker run' via a demo
+      executable"`.
+- [x] `install()` rules: `GNUInstallDirs` + `install(TARGETS ... EXPORT
+      ...)` + `install(DIRECTORY include/ ...)` + `install(EXPORT ... FILE
+      <name>Config.cmake NAMESPACE <name>:: ...)`, emitted only for
+      library target types. Verified real `find_package()`-shaped output
+      (see below), not just that the CMake syntax parses.
+- Verified end-to-end (unit tests in `internal/cmake/generate_test.go`,
+  `internal/config/config_test.go`, `cmd/run_test.go`, plus a real
+  scaffold/build/run/install pass): `cmaker new mylib --lib` → `cmaker
+  run` built the static library, built `mylib_demo`, linked it against
+  the library, and ran it (`mylib::add(2, 3) = 5`); a `--target-type
+  =shared_library` project built a real `.dylib`; `cmake --install build
+  --prefix <dir>` produced a real installable tree
+  (`include/mylib/mylib.h`, `lib/libmylib.a`,
+  `lib/cmake/mylib/mylibConfig.cmake`); a library with `examples/demo.cpp`
+  removed hit the clear error above instead of a cryptic "file not
+  found"; `--lib --template=raylib` and `--lib --lang=c` both correctly
+  rejected with clear "only supported with --template=default, cpp"
+  errors instead of silently misbehaving. Added a new
+  `cmd/integration_test.go` case
+  (`TestIntegrationLibraryScaffoldBuildRunInstall`) covering the same
+  scaffold→build→run→install pipeline under `go test -tags=integration`.
+- Real bug found + fixed during this work: the project name doubles as
+  both the scaffold root *and* the project label (`cmaker new <name>`
+  passes the same string as both `root` and `name` to `scaffoldProject`)
+  - for an executable this only ever showed up cosmetically (`project(/tmp
+  /foo)` in the generated CMake), since `name` was never used as a
+  filesystem path component. Library scaffolding does use it as one
+  (`include/<name>/`, the CMake target name), so `cmaker new
+  /tmp/mylib --lib` initially failed trying to create
+  `include/tmp/mylib/tmp/mylib.h`. Fixed by deriving the library's
+  target/directory name from `filepath.Base(name)` specifically, without
+  touching the pre-existing (unrelated, cosmetic-only) quirk for
+  executables.
+- [ ] Not done, left open as real follow-ups rather than silently dropped:
+      arbitrary N-target projects (this only supports one primary target
+      plus its paired demo, not a general target list - see the updated
+      §3 bullet); library scaffolding composing with `--lang=c`/`hybrid`,
+      `--with-rust`/`--with-zig`, or the dependency-bearing templates
+      (`raylib`/`sfml`/...); a header-only library variant (the
+      `headeronly` template already exists but isn't wired to
+      `target_type`/`install()` the way this section's library type is).
 
-## 17. Package install / a real dependency manager UX
+## 17. Package install / a real dependency manager UX — ✅ DONE (2026-08-05)
 
 Motivation, per user: "options for importing libraries... add the git link
 to the library in yaml and it should be auto fetched while building" (this
@@ -814,47 +905,87 @@ repo/tag/CMake target names and hand-write a `dependencies:` block. A real
 package manager UX means naming a library and getting a working, linked
 dependency in one command.
 
-- [ ] **A built-in package registry**: an embedded (`go:embed`, same
-      pattern as §4's templates) index mapping common library names to
-      their CPM coordinates - `{name, repo, default_tag, link_targets,
-      notes}`. Start with a curated, deliberately small list of
-      well-behaved CPM/CMake-friendly libraries (fmt, spdlog, nlohmann-json,
-      Catch2, GoogleTest, cxxopts, ...) rather than trying to mirror all of
-      vcpkg/Conan on day one - quality and verified-working over coverage.
-- [ ] `cmaker install <name>` - looks up `<name>` in the registry, appends
-      the resolved `Dependency` to `cmaker.yaml`, and immediately
-      reconfigures (`cmake -S .`) so the fetch happens right away (like
-      `npm install`/`cargo add`), not silently deferred to the next build.
-      Clear error listing close registry-name matches if `<name>` isn't
-      found (mirrors the existing "unknown template" error UX in §4).
-- [ ] `cmaker install --git=<url> --tag=<tag> --link=<target>` - the escape
-      hatch for anything not in the curated registry, for any git-hosted
-      library with a real CMakeLists.txt. Effectively a friendlier front
-      end over hand-editing `dependencies:`.
-- [ ] `cmaker uninstall <name>` - removes the dependency entry (and warns if
-      other dependencies' `OPTIONS` reference it, once cross-dependency
-      references are a thing).
-- [ ] `cmaker list` / `cmaker installed` - shows every currently-declared
-      dependency for the project (name, repo, tag, link targets) - the
-      read side of `install`/`uninstall`, and more discoverable than reading
-      raw YAML.
-- [ ] `cmaker search <term>` - searches the built-in registry by name/
-      description before installing (a small, real "how do I even find a
-      JSON library" moment this solves).
-- [ ] **Lockfile** (`cmaker.lock`, generated/updated on install and on
-      build): pins the exact resolved commit hash CPM fetched for each
-      dependency, not just the `tag:` in `cmaker.yaml`. Without this, "tag
-      moved" (a mutable git tag, or a branch used as a tag) silently
-      changes what gets built between machines/CI runs and local dev - a
-      real reproducibility gap once `install` makes adding dependencies
-      this frictionless. Modeled after Cargo.lock/package-lock.json:
-      human-diffable, checked into git, regenerated (not hand-edited).
-- [ ] Depends on §16 only loosely (works fine for executables too); the
-      registry format should be designed so a library scaffolded via §16
-      can itself be `cmaker install`-able by another project later, without
-      a second, incompatible mechanism.
+- [x] **A built-in package registry**: new `internal/registry` package,
+      `//go:embed entries.yaml` (same pattern as §4's templates). Six
+      curated, verified-working entries: `fmt`, `spdlog`, `nlohmann-json`,
+      `cxxopts`, `catch2`, `googletest` - deliberately small over trying to
+      mirror vcpkg/Conan on day one.
+- [x] `cmaker install <name>` - looks up `<name>` (`registry.Find`, case-
+      insensitive), appends the resolved `config.Dependency` to
+      `cmaker.yaml`, regenerates `CMakeLists.txt`, and immediately runs
+      `cmake -S . -B build` so the fetch happens right away (like `npm
+      install`/`cargo add`), not silently deferred to the next build.
+      Refuses to double-add an already-installed name with a clear error
+      pointing at `cmaker uninstall`. Unknown names get a clear error with
+      close-match suggestions (`registry.CloseMatches`, substring +
+      Levenshtein-distance-2, mirrors §4's "unknown template" error UX) -
+      e.g. `install nlohman-json` (typo) suggests `nlohmann-json`.
+- [x] `cmaker install --git=<url> --tag=<tag> --link=<target>` - the escape
+      hatch for anything not in the curated registry. `--tag`/`--link` are
+      required with `--git` (validated with a clear error, not a confusing
+      downstream CMake failure); `--options`/`--download-only` also
+      available for the rarer cases §5's hand-written `dependencies:`
+      already supports (e.g. Eigen's `DOWNLOAD_ONLY` pattern).
+- [x] `cmaker uninstall <name>` - removes the dependency entry, regenerates
+      `CMakeLists.txt`, and removes its `cmaker.lock` entry if present.
+      **Not done**: warning about other dependencies' `OPTIONS`
+      cross-referencing it - deferred, since no shipped registry entry or
+      real-world config actually does this yet, so there was nothing to
+      verify the warning against.
+- [x] `cmaker list` (aliased `cmaker installed`) - prints every currently-
+      declared dependency (name, repo@tag, link targets) - the read side
+      of `install`/`uninstall`, more discoverable than reading raw YAML.
+- [x] `cmaker search <term>` - case-insensitive substring search over the
+      registry's name/notes fields.
+- [x] **Lockfile** (`cmaker.lock`): `internal/registry.UpdateLockfile`
+      resolves each dependency's *actual* checked-out commit by running
+      `git rev-parse HEAD` inside CPM/FetchContent's populated source dir
+      (`_deps/<lowercased-name>-src` - confirmed via a real build that
+      FetchContent lowercases the declared NAME for the directory
+      regardless of the CMake target's own casing, e.g. `Catch2` ->
+      `catch2-src`), and writes a human-diffable YAML file
+      (`{dependencies: {<name>: {repo, tag, commit}}}`, modeled after
+      Cargo.lock). Runs after `cmaker install`'s immediate fetch and after
+      every `cmaker build` configure step (best-effort - a lock-update
+      failure, e.g. an unfetched/partially-configured dependency, is
+      logged via `-v` and does not fail the build itself).
+- Verified end-to-end against real registry fetches, not just that the
+  YAML round-trips: `cmaker install fmt` on a fresh project actually
+  fetched fmt via CPM, wrote a real resolved-commit `cmaker.lock`, and the
+  project built and ran code calling `fmt::print` successfully; `cmaker
+  uninstall`/`cmaker list`/`cmaker search`/the unknown-package suggestion
+  path/the already-installed guard/the `--git` escape hatch (installed
+  `cxxopts` by URL, bypassing the registry entirely) were all exercised
+  against a real project, not just unit-tested in isolation. Added
+  `cmd/integration_test.go`'s `TestIntegrationInstallBuildRun`
+  (`go test -tags=integration`) covering the same install -> lock ->
+  build -> run pipeline.
+- **Real bug found + fixed during this work, unrelated to cmaker itself**:
+  the registry's initial `fmt` default tag (11.0.2) failed to compile on
+  this machine - not a cmaker bug, but a genuine upstream incompatibility
+  between fmt 11.0.2's `FMT_STRING` consteval macro and a bleeding-edge
+  Apple clang (21.0.0) under C++20+, confirmed by reproducing the identical
+  failure with a bare `git clone` + plain `cmake --build` of fmt alone, zero
+  cmaker involvement. fmt 11.2.0 fixes it (verified the same way). Bumped
+  `fmt`'s registry default to 11.2.0 and spot-verified (via bare CMake
+  smoke builds under the same C++20 setting) that `spdlog`, `nlohmann-json`,
+  `cxxopts`, and `googletest`'s latest stable tags all build cleanly too,
+  and bumped their registry defaults to those verified tags rather than
+  the stale ones originally drafted into this section - the `catch2`
+  *template* (§4) keeps its own, separately-verified `v3.5.3` pin
+  unchanged; only the registry entry (a different, newer-verified tag,
+  `v3.15.3`) was touched.
+- [ ] Not done, left open rather than silently dropped: the registry
+      format doesn't yet have a documented path for a §16 library target
+      scaffolded by one cmaker project to register itself as installable
+      by another (the roadmap's original "depends on §16 only loosely"
+      note) - today `cmaker install --git=...` would work for that case
+      manually, but there's no first-class "publish this to the registry"
+      flow. Also not done: the `OPTIONS` cross-reference warning on
+      `uninstall` mentioned above, and any registry entries beyond the
+      original six.
 
-## 18. Domain templates × polyglot interop composition
+## 18. Domain templates × polyglot interop composition — ✅ DONE (2026-08-05)
 
 Motivation, per user: "backend with rust, integrated with C++" / "ml with
 rust integrated with C++." This is explicitly the gap flagged (not faked)
@@ -864,73 +995,138 @@ which is fine for the generic `default` template's hello-world but would
 destroy the `backend` template's actual HTTP server code or the `ml-eigen`
 template's actual linear-algebra demo.
 
-- [ ] **Real fix**: split "wire the crate/library into CMake and link it"
-      (already solid, template-agnostic) from "write a demo `main()` calling
-      into it" (currently the only consumer, and the thing that doesn't
-      generalize). Once split, `--with-rust`/`--with-zig` should compose
-      with *any* template: the crate/library gets scaffolded and linked
-      exactly as it does today, but the demo-main-overwrite step is skipped
-      whenever the template isn't the generic `default` one - the template
-      keeps its own real `main()`/service code, with the Rust/Zig headers
-      and linked library simply *available* for it to use.
-- [ ] `cmaker create myapi --backend --with-rust` - the cpp-httplib service
-      from §13 plus a linked Rust crate, positioned as "C++ handles HTTP
-      routing, Rust handles whatever you want fast/safe" - the template's
-      `main.cpp` should include a short comment showing *how* to call into
-      the linked crate (e.g. a commented-out example route calling
-      `rust_add`), rather than silently leaving the developer to
-      rediscover that the crate is even linked in.
-- [ ] `cmaker create myml --ml --with-rust` (once an `--ml` domain template
-      beyond `ml-eigen` exists, or applied to `ml-eigen` itself) - same
-      composition story for a numerics-plus-Rust starting point.
-- [ ] Extend the same composition to `--with-zig` for both domains, and to
-      combining all three (`--backend --with-rust --with-zig`) - the
-      split design above should make this fall out for free rather than
-      needing per-combination special-casing.
-- [ ] Depends on §12 and §13 (both already shipped) - this is a refactor of
-      how they compose, not new fetching/build-wiring machinery.
+- [x] **Real fix**: split "wire the crate/library into CMake and link it"
+      from "write a demo `main()` calling into it," exactly as scoped.
+      `scaffoldProject` (`cmd/new.go`) now branches on `templateName`: the
+      `default` template still gets the existing `writeInteropDemoMain`
+      (full overwrite - its `main()` is a placeholder, so this stays the
+      richer, fully-working behavior it always was); every other template
+      gets the new `injectInteropUsageHint` (`cmd/interop.go`), which only
+      ever *appends* - a real `#include "rustlib.h"`/`"ziglib.h"` plus a
+      short usage comment, inserted right after the file's existing
+      `#include` block, never touching the template's own code. The old
+      `--with-rust`/`--with-zig`-only-with-`--template=default` guard was
+      removed entirely - composition with any template now just works,
+      not special-cased per template.
+- [x] `cmaker create myapi --backend --with-rust` - `--backend`/`--ml`
+      (`cmd/create.go`) went from always erroring "not implemented yet" to
+      real shorthand for `--template=backend`/`--template=ml-eigen`
+      (mutually exclusive with each other and with an explicitly
+      conflicting `--template`, both checked with a clear error). The
+      injected hint is a real, uncommented `#include` (so the crate is
+      provably linked and compiling, not just present in `cmaker.yaml`)
+      plus a *commented-out* example call, matching the bullet's ask.
+- [x] `cmaker create myml --ml --with-rust` - same composition, applied to
+      the existing `ml-eigen` template (a dedicated `--ml` template beyond
+      `ml-eigen` is still open, tracked in §13, not blocking this).
+- [x] Extended to `--with-zig` and to all three combined
+      (`--backend --with-rust --with-zig`) with zero per-combination
+      special-casing, exactly as predicted - `injectInteropUsageHint`
+      takes both booleans and conditionally adds each library's
+      include/comment block.
+- Verified end-to-end against real builds, not just generated-file
+  inspection: `cmaker create myapi --backend --with-rust` built (cargo +
+  cmake) and the resulting server was started and actually curled
+  (`GET /` and `/health` both returned the template's real responses,
+  unmodified); `cmaker create myml --ml --with-zig` built and ran,
+  producing the same real Eigen linear-algebra output as the plain
+  `ml-eigen` template; the triple combination
+  (`--backend --with-rust --with-zig`) built cleanly (Rust crate, Zig
+  library, and the httplib service all compiling and linking together);
+  `--backend --ml` and `--backend --template=raylib` both correctly
+  rejected with clear conflict errors; the `default` template's own
+  richer (fully-working, not just commented) demo-main behavior is
+  unchanged. Unit tests
+  (`cmd/interop_test.go`) verify the template's own code survives
+  byte-for-byte untouched around the injected hint. Added
+  `cmd/integration_test.go`'s `TestIntegrationDomainTemplateWithRustCompose`
+  (`go test -tags=integration`) covering the same scaffold -> build
+  pipeline.
 
-## 19. Code generation tools
+## 19. Code generation tools — ✅ DONE (2026-08-05)
 
 Motivation, per user: "we have a class Abc in a file Pqr.cpp; we should be
 able to generate getters and setters for that class using cmaker easily by
 a specific command... really essential for developer ergonomics."
 
-- [ ] `cmaker generate accessors --file=Pqr.cpp --class=Abc` (or a REPL-ish
-      `cmaker generate accessors Pqr.cpp Abc`) - scans the named class's
-      private member declarations and emits `getX()`/`setX(...)` pairs.
-- [ ] **Parsing approach needs an explicit decision, not just "parse the
-      C++"**: real C++ parsing (templates, macros, preprocessor
-      conditionals) is notoriously hard and libclang is a heavy, non-Go
-      dependency. Two honest options:
-      1. A deliberately simple heuristic line-based parser covering the
-         common case (`private:`/`public:` sections, `Type name;` /
-         `Type name{};` declarations, no macros/templates in the class
-         body) - fast, no new dependency, works for maybe 80% of real
-         classes, documented as a known limitation for the rest.
-      2. Shell out to `clang-query`/libclang (via cgo or a subprocess) for
-         a real AST-based parse - correct on far more real-world code, but
-         a genuinely heavier dependency to introduce (build complexity,
-         platform availability) for a single codegen feature.
-      Start with (1), verified against a handful of real hand-written
-      classes (including ones with default member initializers, `const`
-      members that shouldn't get a setter, and pointer/reference members
-      where a getter returning by value would be wrong) - document exactly
-      which shapes it gets right vs. silently mishandles, rather than
-      quietly shipping a parser with unstated blind spots.
-- [ ] Generated accessors get inserted into the class body (in the header,
-      if the class is declared in one) with a clear, greppable marker
-      comment (e.g. `// --- cmaker generated accessors ---`) so a second
-      `cmaker generate accessors` run can find and replace its own
-      previous output instead of duplicating it.
+- [x] `cmaker generate accessors --file=Pqr.cpp --class=Abc` (and the
+      REPL-ish `cmaker generate accessors Pqr.cpp Abc` positional form) -
+      new `cmd/generate.go`.
+- [x] **Parsing approach - a third option, not either of the two
+      originally weighed here.** The heuristic-line-parser-vs-libclang
+      choice above turned out to be a false dilemma once the user proposed
+      using an LLM: real semantic understanding (which members are
+      non-public, constness, whether a getter should return by value vs.
+      `const Type&`) is exactly what a heuristic parser is bad at and
+      exactly what an LLM is good at, with no cgo/libclang dependency.
+      Landed design, deliberately split into a **trusted half and an
+      untrusted half**:
+      - *Untrusted (LLM)*: `internal/codegen.ExtractMembers` sends the
+        class body to Anthropic's Messages API and asks for a strict JSON
+        array (`name`/`type`/`is_const`/`return_by_reference`) - the model
+        is only ever trusted to identify *what members exist*, never to
+        write C++ directly into the file.
+      - *Trusted (deterministic Go)*: `internal/codegen.RenderAccessors`
+        renders the actual `getX()`/`setX(...)` text from a fixed
+        template given that JSON, and `internal/codegen.ExtractClassBody`
+        (a heuristic brace-balancing scan - comments/string/char literals
+        skipped, but no template/macro/preprocessor understanding,
+        documented as a known limitation) finds where in the file to put
+        it. So the *only* heuristic-parsing risk from the original
+        two-option debate is now scoped to "find the class's brace
+        extent," a much smaller and more robust problem than "parse
+        member declarations," which is where a hand-rolled parser
+        actually gets shaky.
+      - `internal/llm/anthropic.go`: a deliberately minimal raw
+        `net/http` client (no `anthropic-sdk-go` dependency, matching the
+        project's existing low-dependency stance), reading
+        `ANTHROPIC_API_KEY` from the environment, defaulting to a
+        fast/cheap model (`claude-haiku-4-5-20251001`) since this is a
+        small structured-extraction task, not a large generation one;
+        overridable via `--model`.
+- [x] Generated accessors get inserted into the class body just before its
+      closing brace, wrapped in a greppable
+      `// --- cmaker generated accessors: begin/end ---` marker pair;
+      `InsertAccessors` finds and replaces a previous block in place on a
+      second run instead of duplicating it. Verified via unit tests
+      (`internal/codegen/render_test.go`): fresh insert, and a
+      rename-then-regenerate run that replaces the stale block with
+      exactly one marker pair surviving.
+- [x] `--dry-run` prints the generated block without writing the file.
 - [ ] Once the class-scanning machinery exists, it's a natural base for
       more generators later - equality operators, a `toString()`/`operator
-      <<`, constructor boilerplate from member list - track those as
-      follow-ups under this same `cmaker generate` command family rather
-      than each getting a bespoke one-off command.
-- [ ] Depends on nothing else in this list; this is the item to start on
-      as an alternative first move if a §16→§17→§18 straight line feels
-      too big a first bite.
+      <<`, constructor boilerplate from member list - **not done**, left
+      open as a real follow-up under the same `cmaker generate` family.
+- Verified: `internal/codegen` unit tests (brace-balancing including a
+  string literal containing a stray `{`/`}`, forward-declaration and
+  class-not-found error paths, marker insert/replace idempotency, member
+  extraction and markdown-code-fence stripping against a fake
+  `Completer` - no network needed for any of this) all pass. End-to-end
+  against a real file: `cmaker generate accessors Pqr.cpp Abc` on a real
+  hand-written class correctly located the class body and reached the
+  Anthropic API call boundary (failing there only because this dev
+  environment has no `ANTHROPIC_API_KEY` set) with a clear, actionable
+  error; a nonexistent class name produced a clear "no 'class X'
+  declaration found" error instead of a crash.
+- [x] **Live LLM round-trip verified (2026-08-05)**, closing the one gap
+  noted above: with a real `ANTHROPIC_API_KEY`, `cmaker generate accessors`
+  against the same `Abc` class (a `std::string`, a plain `int`, and a
+  `const int` member) correctly produced `const std::string&
+  getName()`/`setName(...)` (reference semantics for the non-trivial
+  type), plain `int getAge()`/`setAge(...)`, and a getter-only `int
+  getId()` for the `const` member with no setter - real semantic judgment
+  from the model, not templated guesswork. The result compiled clean
+  (`c++ -std=c++17 -fsyntax-only`), and re-running the command against the
+  same file replaced the previous block in place (exactly one marker pair
+  survived), confirming the idempotent-regenerate path also holds up
+  against real (not fake-`Completer`) LLM output, which can vary in
+  formatting/whitespace between calls in ways a hand-written fake wouldn't
+  exercise.
+- Real, incidental bug fixed while touching this area: adding a `test`
+  subcommand in §3's ctest work (below) silently broke the README's own
+  `cmaker add config test '...'` example, since `test` became a reserved
+  built-in command name - the example (and the matching CLI help text in
+  `cmd/configs.go`) now uses `scratch` instead.
 
 ## 20. Build tooling & DX polish
 
@@ -939,28 +1135,64 @@ a serious, well-run C++ project" - individually modest, collectively a big
 part of what separates a toy scaffolder from a tool people reach for by
 default.
 
-- [ ] **Compiler cache auto-detection**: if `ccache`/`sccache` is on
-      `PATH`, automatically set `CMAKE_CXX_COMPILER_LAUNCHER`/
-      `CMAKE_C_COMPILER_LAUNCHER` - a real, easy build-speed win (especially
-      for the CPM-fetched-dependency templates, which recompile their
-      dependency from source every clean build) for near-zero
-      implementation cost. Opt-out via `cmaker.yaml` if someone doesn't
-      want it.
-- [ ] **`-j` parallelism for `cmake --build`** - carried forward from the
-      §3/§5 follow-up list (still open, never actually fixed): default to
-      `nproc`-equivalent parallelism instead of the current single-threaded
-      build.
-- [ ] **`.clang-format`/`.clang-tidy` scaffolding + `cmaker fmt`/`cmaker
-      lint`** - generate sane default configs on `cmaker new`, and thin
-      wrapper commands that run `clang-format -i`/`clang-tidy` project-wide
-      so there's a single blessed way to format/lint a cmaker project
-      without everyone hand-rolling their own invocation.
-- [ ] **Real `ctest` wiring** - closes the other still-open §3 follow-up
-      ("test targets as an opt-in config section" - the `catch2` template
-      links Catch2 but never wired `enable_testing()`/`add_test()`).
-      `cmaker test` (a real subcommand, not just a named-config convention)
-      should run `ctest` and report pass/fail cleanly, with the TUI sidebar
-      showing test status alongside build/run.
+- [x] **Compiler cache auto-detection** — ✅ done (2026-08-05).
+      `internal/cmake.DetectCompilerLauncher` checks `ccache` then
+      `sccache` on `PATH`; `internal/cmake.StandardConfigureFlags`
+      (a new shared helper, also consolidating the near-duplicate
+      `cmake -S` flag-building that used to live separately in
+      `cmd/build.go`, `cmd/new.go`, and `cmd/install.go`) wires the found
+      tool in as `CMAKE_C_COMPILER_LAUNCHER`/`CMAKE_CXX_COMPILER_LAUNCHER`
+      on every configure. Opt-out via `cmaker.yaml`'s new
+      `disable_ccache: true` (checked, not just documented). `cmaker
+      doctor` reports `ccache`/`sccache` availability and whether one is
+      actively wired in. Verified for real, not just via config
+      inspection: installed `ccache` via Homebrew, scaffolded a project,
+      and confirmed via `ccache -s` that a first build was a real cache
+      *miss* and an immediate rebuild was a real cache *hit* - the
+      launcher genuinely intercepts compiles, not just "the flag is
+      present in the generated command line."
+- [x] **`-j` parallelism for `cmake --build`** — ✅ done (2026-08-05).
+      `cmd/build.go`'s `buildCommandArgs` (a small pure function, unit
+      tested directly rather than only through a real `cmake` invocation)
+      defaults to `runtime.NumCPU()`, overridable via `cmaker build
+      --jobs`/`-j`. `cmaker run`/`cmaker test`/`cmaker watch` all inherit
+      the default automatically since they call the same `runBuild`.
+- [x] **`.clang-format`/`.clang-tidy` scaffolding + `cmaker fmt`/`cmaker
+      lint`** — ✅ done (2026-08-05). Every scaffolded project gets a
+      `.clang-format` (4-space indent, attached braces - matching the
+      style cmaker's own generated example code already uses) and a
+      `.clang-tidy` with a deliberately curated, low-noise check list
+      (`bugprone-*`/`performance-*`/`clang-analyzer-*` plus a couple of
+      `modernize-*`/`readability-*` checks - not clang-tidy's full
+      opinionated default set). New `cmaker fmt` (`--check` for a
+      CI-friendly dry-run, non-zero exit if anything would change) and
+      `cmaker lint` (against `build/compile_commands.json`, itself now
+      exported unconditionally by `StandardConfigureFlags` via
+      `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` - so `cmaker lint` only ever
+      needs "run `cmaker build` first," never a separate compile-database
+      setup step). Verified for real (`clang-format`/`clang-tidy`
+      installed via Homebrew for the session): `cmaker fmt --check` on
+      deliberately mis-formatted code failed with real clang-format
+      diagnostics, `cmaker fmt` fixed it in place, and a second
+      `--check` passed; `cmaker lint` on code containing two real
+      `int* p = 0;`/`if (p == 0)` patterns correctly flagged exactly the
+      two `modernize-use-nullptr` warnings the curated `.clang-tidy`
+      config asks for, proving it actually reads the project's config and
+      the exported compilation database, not just that the command runs.
+      (One reproducible, unrelated environment quirk hit during
+      verification and not worth working around: this machine's
+      Homebrew-installed, keg-only `clang-tidy` doesn't resolve the
+      macOS SDK's `<iostream>` the same way the system-`clang++`-recorded
+      `compile_commands.json` entry does, so `cmaker lint` also reported
+      a spurious `'iostream' file not found` alongside the two real
+      findings - a local `clang-tidy`/SDK path mismatch from mixing
+      toolchains, not a cmaker bug, and it didn't stop the real checks
+      from running or being reported correctly.)
+- [x] ~~**Real `ctest` wiring**~~ — **done, see §3** (2026-08-05): `cmaker
+      test` runs `ctest --output-on-failure` after a build, and the TUI
+      sidebar has a `Test` entry alongside `Build`/`Run`. Still scoped to
+      the single-executable model — real per-test-target status/reporting
+      is blocked on §16.
 - [ ] **Coverage reports**: `sanitizers:`-style opt-in `coverage: true` in
       `cmaker.yaml` wiring `--coverage`/`-fprofile-instr-generate` as
       appropriate for the detected compiler, plus a `cmaker coverage`
@@ -978,6 +1210,11 @@ default.
       the right base image/toolchain for the project's configured
       language/compiler - a real "clone and it just works, even without a
       local toolchain" story.
+- [ ] **Not done, left open**: coverage reports, benchmark scaffolding,
+      Doxygen scaffolding, and devcontainer/Dockerfile scaffolding (the
+      four bullets above) - the compiler-cache/`-j`/fmt-lint trio landed
+      2026-08-05, these four are each really their own
+      template/command category and weren't in this pass's scope.
 - [ ] Every bullet here is independent of the others and of §16-§19 -
       freely reorderable, good candidates to interleave with the bigger
       items above if you want quick wins between them.
@@ -1005,24 +1242,61 @@ capable of being more than one kind of target.
       only-executables is a much smaller, less interesting version of this
       problem.
 
-## 22. Supply-chain / dependency auditing
+## 22. Supply-chain / dependency auditing — ✅ DONE (2026-08-05)
 
 Motivation: once §17 makes adding dependencies frictionless, "what am I
 actually pulling in, and is any of it known-bad" becomes a real question
 worth answering, not just a nice-to-have - the same maturity arc every
 package ecosystem (npm, cargo) has gone through.
 
-- [ ] `cmaker audit` - checks the versions/commits pinned in `cmaker.lock`
-      (§17) against a vulnerability data source (OSV.dev's API is a
-      plausible, free, no-account-needed starting point) and reports any
-      known CVEs affecting a pinned dependency version.
-- [ ] License surfacing: report each dependency's declared license (from
-      its repo, where discoverable) in `cmaker list`/`cmaker audit` output,
-      so a license-incompatibility problem is visible before it's a
-      surprise.
-- [ ] Depends on §17's lockfile existing - auditing a `tag:` that might be
-      a moving target isn't a well-defined question the way auditing a
-      pinned commit is.
+- [x] `cmaker audit` - new `internal/audit` package (`Run`/`QueryCommit`,
+      pure logic, no CLI concerns, mirroring `internal/config`/
+      `internal/cmake`'s split) POSTs each `cmaker.lock` (§17) dependency's
+      exact resolved *commit* to OSV.dev's documented commit-query endpoint
+      (`{"commit": "<sha>"}` -> `POST /v1/query`) and reports any vulnerability
+      OSV has on record for that commit. Auditing the locked commit rather
+      than the `tag:` is deliberate and exactly what the roadmap called
+      for: a tag is a mutable pointer, a resolved commit is not, so this is
+      the same "what did we actually build" question §17's lockfile exists
+      to answer, extended to security. Exits non-zero if anything is found,
+      so it's CI-usable the same way `cmaker test`/`cmaker fmt --check` are.
+- [x] License surfacing: `internal/audit.GitHubLicense` looks up a
+      GitHub-hosted dependency's license via GitHub's public repos API
+      (which reports whatever its own `licensee` detector found) - shown
+      in both `cmaker audit`'s output and a new `cmaker list --licenses`
+      flag. Deliberately opt-in on `list` (plain `cmaker list` stays
+      instant/offline, unaffected - `--licenses` is the only path that adds
+      a network call per dependency), unconditional on `audit` (whose
+      whole point is a deeper, already-networked check).
+- [x] Depends on §17's lockfile, exactly as scoped - `cmaker audit` reads
+      only `cmaker.lock`, not `cmaker.yaml`'s `dependencies:` (which has no
+      resolved commit to query by).
+- Verified end-to-end against the real, live OSV.dev and GitHub APIs (not
+  mocked) - installed a real dependency (`fmt`) via `cmaker install`, then
+  `cmaker audit` correctly reported its real resolved commit's (no known
+  vulnerabilities) status and its real license (MIT, matching fmt's actual
+  license) in a single real network round-trip per API; `cmaker list
+  --licenses` reported the same license while plain `cmaker list` stayed
+  network-free (verified via `time`, ~5ms); an empty `cmaker.lock` (no
+  dependencies installed yet) produced a clear "nothing to audit" message
+  at exit 0, not an error. `internal/audit`'s unit tests
+  (`osv_test.go`/`license_test.go`/`audit_test.go`) run against a fake
+  `httptest.Server` for deterministic coverage of the parsing/error/sorting
+  logic independent of live network state or OSV's own data-coverage
+  gaps for any specific commit.
+- **Real, useful thing learned during verification, not a bug**: OSV.dev's
+  commit-query endpoint's coverage is real but uneven in practice - it
+  correctly returns results for a known-vulnerable *package+version* query
+  (verified directly against a real CVE, Jinja2/CVE-2019-10906, to confirm
+  the API schema and that this integration parses real advisory data
+  correctly) and curl is tracked with real GIT-range vulnerability records,
+  but querying a specific curl release commit that OSV's own affected-tags
+  list says *should* match one of those records returned empty. This is a
+  property of OSV.dev's own indexing completeness for exact-commit lookups
+  (the same kind of coverage gap any vulnerability database has), not a
+  defect in cmaker's integration - documented here rather than silently
+  assumed away, since "cmaker audit found nothing" should never be
+  over-read as "definitely nothing to find."
 
 ## 23. Extensibility: user/community templates and registry entries
 
@@ -1051,7 +1325,7 @@ be able to extend it without forking.
       explicitly as the most aspirational/least-scoped item in this
       section.
 
-## 24. AI-assisted autoheal
+## 24. AI-assisted autoheal — ✅ v1 DONE (2026-08-06)
 
 Motivation, per user: capture the last N build/run logs, and `cmaker heal`
 uses "agentic AI" to read those logs plus the codebase and produce a patch
@@ -1061,46 +1335,96 @@ external LLM API and (b) proposes changes to the user's actual source code.
 Both need a deliberate, phased, safety-first design - "silently rewrite my
 code" is not an acceptable default for anything, however good the model is.
 
-- [ ] **Log capture** (the foundation, independent of AI): every `cmaker
-      build`/`cmaker run` writes its full combined stdout/stderr to a
-      rotating store - `.cmaker/logs/<build|run>-<timestamp>.log`, keeping
-      the last 5 (configurable) and pruning older ones. This alone is
-      useful without any AI attached (e.g. `cmaker logs` to just list/tail
-      recent build attempts) and should ship and be verified first,
-      completely decoupled from the AI piece.
-- [ ] **Provider integration**: cmaker doesn't talk to any LLM API today.
-      Needs a real design decision - which provider(s), how the API key is
-      supplied (env var, e.g. `ANTHROPIC_API_KEY`, is the obvious default;
-      never a `cmaker.yaml` field, to avoid any risk of a key ending up
-      committed to git), and what happens with no key configured (`cmaker
-      heal` should fail with a clear, actionable message, not silently
-      no-op or crash).
-- [ ] **`cmaker heal` v1 - suggest, don't touch**: reads the most recent
-      failing log, extracts the file:line references the compiler already
-      gives you, reads just those files (not an unbounded whole-codebase
-      dump - keeps the request scoped, cheaper, and more likely to produce
-      a focused fix), sends it to the configured model, and prints the
-      suggested fix as a **diff** to the terminal. Nothing is written to
-      disk in v1. This is the safe, useful, shippable first cut.
-- [ ] **`cmaker heal --apply` v2** - only after v1 is solid: applies the
-      diff, but only ever on a clean git working tree (refuses outright, or
-      auto-stashes first with a clear message, if there are uncommitted
-      changes) so a bad AI-generated patch is always trivially revertable
-      via `git checkout`/`git stash pop`. Should also re-run the build
-      immediately after applying, and clearly report whether the patch
-      actually fixed the failure or not - "healed" needs to mean "verified
-      to build," not "a model produced some text that looked plausible."
-- [ ] **Explicit non-goals for now**: multi-file architectural rewrites,
-      applying a patch without the build immediately re-verifying it, and
-      running unattended/non-interactively in CI (a heal loop that
-      auto-commits AI-generated patches with no human in the loop is a
-      different, much riskier feature than what's described here, and not
-      what's being proposed).
-- [ ] Depends on nothing structurally, but is deliberately sequenced last
-      in this document - it's the highest-effort, highest-risk item, and
-      benefits most from every other DX/tooling piece (especially §20's
-      `ctest`/build tooling) already being solid, so "did the fix actually
-      work" has a reliable signal to check against.
+- [x] **Log capture** (the foundation, independent of AI) - new
+      `internal/logs` package. Every `cmaker build`/`cmaker run` writes its
+      combined stdout/stderr to a rotating `.cmaker/logs/<timestamp>-
+      <kind>-<ok|fail>.log` (timestamp first, not kind first - an early
+      version put kind first and a real test caught that this makes
+      filenames sort by kind before time, so "most recent across build and
+      run" silently returned the wrong one). Keeps the last 5 by default,
+      configurable via `cmaker.yaml`'s `logs_keep`. `cmaker logs` lists/
+      prints captures standalone, no AI attached - ships and is useful on
+      its own, exactly as scoped. `cmaker build`'s configure+build steps
+      share one combined log; `cmaker run`'s own execution gets a separate
+      "run" log, so a runtime crash is capturable too, not just a compile
+      failure.
+- [x] **Provider integration**: already solved by §19's `internal/llm`
+      Anthropic client (`ANTHROPIC_API_KEY` env var, never a `cmaker.yaml`
+      field) - reused as-is, no new provider code needed. `cmaker heal`
+      with no key set fails via the same clear, actionable
+      `llm.NewClientFromEnv` error §19 already established.
+- [x] **`cmaker heal` v1 - suggest, don't touch**: reads the most recent
+      failing log (`logs.LatestFailure`), extracts file:line references
+      from the compiler's own error output (`internal/heal.
+      ExtractReferencedFiles`, capped at 5 files), reads just those files,
+      and asks the model to fix it. Nothing is written to disk - `cmaker
+      heal`'s diff is printed to stdout for review/manual `git apply`.
+      **Real design change from what was originally planned**, driven
+      entirely by live testing against a real model (see below): the LLM
+      is asked for each changed file's *entire corrected content*, not a
+      hand-written unified diff - `cmaker` computes the actual diff itself
+      (`internal/heal/diff.go`, an LCS-based line diff, single hunk per
+      file, with correct hunk-header arithmetic and `\ No newline at end
+      of file` handling) rather than trusting the model's diff-format
+      arithmetic. Same "don't trust the LLM to emit the final artifact
+      directly" principle §19's accessor generator already established,
+      arrived at here specifically because live testing caught the model
+      getting it wrong.
+- [ ] **`cmaker heal --apply` v2** - not done, left open exactly as scoped
+      (v1 was the goal for this pass): applies the diff, but only ever on
+      a clean git working tree, re-runs the build immediately after, and
+      reports whether it actually fixed the failure.
+- [x] **Explicit non-goals held to**: no multi-file architectural rewrites,
+      no applying without a human reviewing first, no unattended/CI usage -
+      v1 only ever prints a diff for a human to read.
+- Verified end-to-end against a real failing build and a real
+  `claude-haiku-4-5` model call (not mocked), catching four real bugs
+  along the way that unit tests alone would not have:
+  1. **Absolute compiler paths broke file reading.** `filepath.Join(".",
+     "/tmp/x/y")` silently produces `"tmp/x/y"`, not `"/tmp/x/y"` - a real
+     compiler on this machine reports absolute source paths, and the
+     initial implementation mangled them into paths that don't exist.
+     Fixed by using an already-absolute reference as-is.
+  2. **The model got unified-diff hunk-header arithmetic wrong.** The
+     original design asked the LLM to hand-write a diff directly; a real
+     response's `@@ -1,6 +1,11 @@` header claimed 6 original lines where 7
+     were actually present in the hunk body, and `git apply` rejected it
+     as corrupt. This is *why* the design changed to "model proposes full
+     file content, cmaker computes the diff" mid-implementation, not a
+     pre-planned choice.
+  3. **`git apply` rejects absolute paths in diff headers outright**
+     ("invalid path"). Fixed by converting an absolute file reference to a
+     path relative to the project root before it ever appears in a diff
+     header (or in the prompt/response contract at all).
+  4. **A stray trailing line silently became part of "the fix."** A real
+     model response's corrected file content ended in a bare `---` (an
+     apparent echo of the prompt's own `--- file: <path> ---` delimiter
+     style) - nothing bounds the end of the last (undelimited) file block,
+     so this line would otherwise have landed in the patched file
+     unnoticed. The resulting diff applied to git *perfectly cleanly* and
+     still broke the build - caught only by actually rebuilding after
+     applying, not by "does the diff look valid." `cmaker heal` now
+     defensively strips a trailing dashes-only line from the last block,
+     on top of the markdown-code-fence stripping already needed.
+  After all four fixes: a genuinely broken build (`compute_total` called
+  but never declared) was captured as a `-fail.log`, `cmaker heal`
+  correctly diagnosed it and proposed adding the missing function, the
+  resulting diff applied with `git apply` with zero errors, and the
+  rebuilt project actually compiled and ran correctly (`Total: 5`) -
+  verified as a complete real loop, not diff-shaped text that merely
+  looked plausible. `internal/logs`/`internal/heal`'s unit tests (17+
+  cases, including `TestUnifiedDiffHunkHeaderIsConsistentWithBody`, which
+  actually shells out to a real `git apply` for several diff shapes rather
+  than just eyeballing the output) and a new
+  `cmd/integration_test.go` case (`TestIntegrationBuildLogCapture`,
+  network-free) cover the AI-independent log-capture half under
+  `go test`/`go test -tags=integration` without needing an API key.
+- [ ] Not done, left open rather than silently dropped: §24's own explicit
+      v2 (`--apply`), and (also inherited from the design pivot above)
+      multi-hunk-per-file diffs (today's `unifiedDiff` deliberately emits
+      one hunk per file, sufficient for the small, focused fixes this
+      targets, but would need splitting for a fix touching widely
+      separated parts of a large file).
 
 ## 25. AI-assisted natural-language scaffolding
 

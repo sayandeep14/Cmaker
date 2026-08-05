@@ -28,7 +28,7 @@ var removeCmd = &cobra.Command{
 var addConfigCmd = &cobra.Command{
 	Use:   "config <name> '<cmaker args...>'",
 	Short: "Save a named shortcut, run later as 'cmaker <name>'",
-	Long:  "Save a named shortcut into cmaker.yaml's configs: map. For example,\n'cmaker add config test \"run --only=test1.cpp\"' lets you later just run\n'cmaker test' to do the same thing - a lightweight task runner in the\nspirit of 'npm run <script>' or 'just'.",
+	Long:  "Save a named shortcut into cmaker.yaml's configs: map. For example,\n'cmaker add config scratch \"run --only=scratch.cpp\"' lets you later just run\n'cmaker scratch' to do the same thing - a lightweight task runner in the\nspirit of 'npm run <script>' or 'just'.",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return addNamedConfig(args[0], args[1])

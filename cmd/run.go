@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"cmaker/internal/config"
+	"cmaker/internal/logs"
 )
 
 var runCmd = &cobra.Command{
@@ -122,16 +123,23 @@ func quoteAll(args []string) []string {
 
 func runProject(runnerOverride string, args []string) error {
 	cfg := syncConfig()
+	targetType := config.TargetTypeOrDefault(cfg.TargetType)
 
 	runner := cfg.Runner
 	if runnerOverride != "" {
 		runner = runnerOverride
 	}
 	if runner != "" {
+		if targetType != "executable" {
+			return fmt.Errorf("'runner' isn't supported for %s projects yet", targetType)
+		}
 		return runViaRunner(runner, mainSourcePath(cfg), args)
 	}
 
-	exeName := cfg.Executable
+	exeName, err := runnableBinaryName(cfg, targetType)
+	if err != nil {
+		return err
+	}
 	if runtime.GOOS == "windows" {
 		exeName += ".exe"
 	}
@@ -139,7 +147,7 @@ func runProject(runnerOverride string, args []string) error {
 
 	if isBuildRequired(exePath) {
 		infof("Changes detected. Rebuilding...")
-		if err := runBuild(false, ""); err != nil {
+		if err := runBuild(false, "", 0); err != nil {
 			return err
 		}
 	}
@@ -149,16 +157,45 @@ func runProject(runnerOverride string, args []string) error {
 		runPath = "./" + exePath
 	}
 
+	// Captures the executable's own run output (§24) as a "run" log,
+	// separate from the "build" log runBuild independently captures above -
+	// a runtime crash is exactly the kind of failure 'cmaker heal' should
+	// be able to read from too.
+	logSession, logErr := logs.Start(".", "run", cfg.LogsKeep)
+	if logErr != nil {
+		debugf("log capture: %v", logErr)
+	}
+
 	child := exec.Command(runPath, args...)
-	child.Stdout, child.Stderr, child.Stdin = os.Stdout, os.Stderr, os.Stdin
+	child.Stdout = logSession.Tee(os.Stdout)
+	child.Stderr = logSession.Tee(os.Stderr)
+	child.Stdin = os.Stdin
 	infof("Running %s:\n", exePath)
-	if err := child.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+	runErr := child.Run()
+	logSession.Finish(runErr)
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())
 		}
-		return err
+		return runErr
 	}
 	return nil
+}
+
+// runnableBinaryName returns the name of the binary 'cmaker run' should
+// build and execute. A plain executable project runs cfg.Executable itself.
+// A library project has no executable of its own - the closest thing is
+// its examples/demo.cpp demo consumer (see internal/cmake.Generate and
+// cmd/new.go's writeLibrarySources), built as "<executable>_demo"; if that
+// file doesn't exist, there's nothing for 'cmaker run' to build and run.
+func runnableBinaryName(cfg config.Config, targetType string) (string, error) {
+	if targetType == "executable" {
+		return cfg.Executable, nil
+	}
+	if _, err := os.Stat(filepath.Join("examples", "demo.cpp")); err != nil {
+		return "", fmt.Errorf("this is a %s project - there's no executable to run (use 'cmaker build' instead); add examples/demo.cpp to also enable 'cmaker run' via a demo executable", targetType)
+	}
+	return cfg.Executable + "_demo", nil
 }
 
 // mainSourcePath returns the entry source file cmaker itself scaffolds for a

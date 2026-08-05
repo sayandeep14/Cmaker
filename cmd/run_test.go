@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"cmaker/internal/config"
 )
 
 func TestIsBuildRequiredNoBinary(t *testing.T) {
@@ -71,6 +73,37 @@ func TestIsBuildRequiredIgnoresBuildAndGitDirs(t *testing.T) {
 
 	if isBuildRequired(binaryPath) {
 		t.Error("expected false - only build/ and .git/ have newer files, both should be skipped")
+	}
+}
+
+func TestRunnableBinaryNameExecutable(t *testing.T) {
+	got, err := runnableBinaryName(config.Config{Executable: "main"}, "executable")
+	if err != nil {
+		t.Fatalf("runnableBinaryName() error = %v", err)
+	}
+	if got != "main" {
+		t.Errorf("runnableBinaryName() = %q, want %q", got, "main")
+	}
+}
+
+func TestRunnableBinaryNameLibraryWithoutDemo(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if _, err := runnableBinaryName(config.Config{Executable: "mylib"}, "static_library"); err == nil {
+		t.Error("expected an error when no examples/demo.cpp exists for a library project")
+	}
+}
+
+func TestRunnableBinaryNameLibraryWithDemo(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeFileAt(t, filepath.Join("examples", "demo.cpp"), "int main(){}")
+
+	got, err := runnableBinaryName(config.Config{Executable: "mylib"}, "static_library")
+	if err != nil {
+		t.Fatalf("runnableBinaryName() error = %v", err)
+	}
+	if got != "mylib_demo" {
+		t.Errorf("runnableBinaryName() = %q, want %q", got, "mylib_demo")
 	}
 }
 

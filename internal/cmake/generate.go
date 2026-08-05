@@ -23,6 +23,48 @@ import (
 // invocation - it's a no-op for projects that don't need it.
 const PolicyVersionMinFlag = "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
 
+// ExportCompileCommandsFlag makes CMake emit build/compile_commands.json on
+// every configure - needed by `cmaker lint` (clang-tidy wants a compilation
+// database) and incidentally useful to any IDE/clangd already pointed at
+// the project. Unconditional and effectively free, like PolicyVersionMinFlag.
+const ExportCompileCommandsFlag = "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+
+// DetectCompilerLauncher looks for ccache, then sccache, on PATH - whichever
+// is found first is what StandardConfigureFlags wires in as
+// CMAKE_<LANG>_COMPILER_LAUNCHER. Also used by `cmaker doctor` to report
+// compiler-cache availability.
+func DetectCompilerLauncher() (tool string, path string, found bool) {
+	for _, name := range []string{"ccache", "sccache"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return name, p, true
+		}
+	}
+	return "", "", false
+}
+
+// StandardConfigureFlags returns the flags every cmaker-issued `cmake -S`
+// invocation should pass, regardless of caller (cmd/build.go, cmd/new.go's
+// pre-flight configure, cmd/install.go's post-install reconfigure): the
+// policy-version workaround, compile_commands.json export, and - unless
+// c.DisableCcache opts out - a compiler-launcher override for whichever of
+// ccache/sccache is found on PATH. A build-speed win that costs nothing
+// when neither tool is installed (DetectCompilerLauncher just reports
+// found=false and this contributes no extra flags).
+func StandardConfigureFlags(c config.Config) []string {
+	flags := []string{PolicyVersionMinFlag, ExportCompileCommandsFlag}
+	if c.DisableCcache {
+		return flags
+	}
+	_, path, found := DetectCompilerLauncher()
+	if !found {
+		return flags
+	}
+	return append(flags,
+		"-DCMAKE_C_COMPILER_LAUNCHER="+path,
+		"-DCMAKE_CXX_COMPILER_LAUNCHER="+path,
+	)
+}
+
 // cpmBootstrap downloads and includes CPM.cmake (the standard CMake package
 // manager for fetching dependencies from git at configure time) so
 // dependency-bearing templates don't require the library to already be
@@ -38,6 +80,7 @@ include(${CPM_DOWNLOAD_LOCATION})
 // Generate writes CMakeLists.txt into root, derived from c.
 func Generate(root string, c config.Config) error {
 	lang := config.LanguageOrDefault(c.Language)
+	targetType := config.TargetTypeOrDefault(c.TargetType)
 
 	var libsBuilder strings.Builder
 	for _, l := range c.LinkLibraries {
@@ -62,7 +105,15 @@ func Generate(root string, c config.Config) error {
 			if strings.Contains(dep.Repo, "://") {
 				repoKeyword = "GIT_REPOSITORY"
 			}
-			fmt.Fprintf(&depsBuilder, "CPMAddPackage(\n  NAME %s\n  %s %s\n  GIT_TAG %s\n", dep.Name, repoKeyword, dep.Repo, dep.Tag)
+			// GIT_SHALLOW avoids a full-history clone of the dependency's
+			// repo - for a dependency like raylib (500+ MB of git history
+			// vs. ~90 MB at a single tag), a full clone can be slow enough
+			// to look like a hung/failed fetch on anything but a fast
+			// connection. Safe as long as 'tag:' names an actual tag or
+			// branch (true for every dependency in cmaker's own templates);
+			// an arbitrary commit SHA can fail a shallow fetch on git hosts
+			// that don't support fetching arbitrary commits, GitHub does.
+			fmt.Fprintf(&depsBuilder, "CPMAddPackage(\n  NAME %s\n  %s %s\n  GIT_TAG %s\n  GIT_SHALLOW TRUE\n", dep.Name, repoKeyword, dep.Repo, dep.Tag)
 			if dep.DownloadOnly {
 				depsBuilder.WriteString("  DOWNLOAD_ONLY YES\n")
 			}
@@ -161,17 +212,81 @@ func Generate(root string, c config.Config) error {
 		fmt.Fprintf(&zigLink, "target_link_libraries(%s PRIVATE ${CMAKER_ZIG_LIB})\n", c.Executable)
 	}
 
-	// extraBuilder (cmake_extra) is injected here, before add_executable -
-	// custom targets it defines (e.g. an Eigen INTERFACE library wrapping a
-	// DOWNLOAD_ONLY dependency) must exist before target_link_libraries
-	// references them further down.
+	var testingBuilder strings.Builder
+	if c.Testing != nil && c.Testing.Enabled {
+		fmt.Fprintf(&testingBuilder, "\nenable_testing()\nadd_test(NAME %s COMMAND %s)\n", c.Executable, c.Executable)
+	}
+
+	// targetDeclLine/includeDirsLine branch on target_type (§16): a library
+	// target is declared with add_library(... STATIC|SHARED ...) instead of
+	// add_executable, and its headers need PUBLIC visibility (via the
+	// BUILD_INTERFACE/INSTALL_INTERFACE generator-expression pair, so a
+	// consumer sees a plain "include" path whether it's building against
+	// this project's source tree or an installed copy) so that anything
+	// linking against it can actually see its headers - an executable's
+	// headers stay PRIVATE, unchanged from before target types existed.
+	var targetDeclLine string
+	var includeDirsLine string
+	switch targetType {
+	case "static_library":
+		targetDeclLine = fmt.Sprintf("add_library(%s STATIC ${SOURCES})\n", c.Executable)
+	case "shared_library":
+		targetDeclLine = fmt.Sprintf("add_library(%s SHARED ${SOURCES})\n", c.Executable)
+	default:
+		targetDeclLine = fmt.Sprintf("add_executable(%s ${SOURCES})\n", c.Executable)
+	}
+	if targetType == "executable" {
+		includeDirsLine = fmt.Sprintf("target_include_directories(%s PRIVATE include)\n", c.Executable)
+	} else {
+		includeDirsLine = fmt.Sprintf("target_include_directories(%s PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)\n", c.Executable)
+	}
+
+	// A library target with an examples/*.cpp demo (see cmd/new.go's
+	// writeLibrarySources) gets a second, always-linked executable target so
+	// "does my library actually work" stays a one-command `cmaker run`
+	// answer instead of requiring a separate consumer project.
+	var demoBuilder strings.Builder
+	if targetType != "executable" {
+		if matches, _ := filepath.Glob(filepath.Join(root, "examples", "*.cpp")); len(matches) > 0 {
+			demoName := c.Executable + "_demo"
+			fmt.Fprintf(&demoBuilder, "\nfile(GLOB_RECURSE %s_SOURCES \"examples/*.cpp\")\nadd_executable(%s ${%s_SOURCES})\ntarget_link_libraries(%s PRIVATE %s)\n",
+				c.Executable, demoName, c.Executable, demoName, c.Executable)
+		}
+	}
+
+	// install() rules (CMake's own install, not a package manager) so
+	// `cmake --install build` and downstream find_package(<name>) both
+	// work for a library target - not emitted for a plain executable, which
+	// has no consumer story to support.
+	var installBuilder strings.Builder
+	if targetType != "executable" {
+		fmt.Fprintf(&installBuilder, `
+include(GNUInstallDirs)
+install(TARGETS %s
+  EXPORT %sTargets
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(EXPORT %sTargets
+  FILE %sConfig.cmake
+  NAMESPACE %s::
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/%s
+)
+`, c.Executable, c.Executable, c.Executable, c.Executable, c.Executable, c.Executable)
+	}
+
+	// extraBuilder (cmake_extra) is injected here, before the target
+	// declaration - custom targets it defines (e.g. an Eigen INTERFACE
+	// library wrapping a DOWNLOAD_ONLY dependency) must exist before
+	// target_link_libraries references them further down.
 	content := fmt.Sprintf(`cmake_minimum_required(VERSION 3.14)
 project(%s)
 %s
-%s%s%s%s%sadd_executable(%s ${SOURCES})
-target_include_directories(%s PRIVATE include)
-%s%s%s%s`, c.ProjectName, stdBuilder.String(), depsBuilder.String(), rustPreamble.String(), zigPreamble.String(), extraBuilder.String(), globLine,
-		c.Executable, c.Executable, libs, rustLink.String(), zigLink.String(), optsBuilder.String())
+%s%s%s%s%s%s%s%s%s%s%s%s`, c.ProjectName, stdBuilder.String(), depsBuilder.String(), rustPreamble.String(), zigPreamble.String(), extraBuilder.String(), globLine,
+		targetDeclLine, includeDirsLine, libs, rustLink.String(), zigLink.String(), optsBuilder.String(), testingBuilder.String())
+	content += demoBuilder.String() + installBuilder.String()
 
 	return os.WriteFile(filepath.Join(root, "CMakeLists.txt"), []byte(content), 0644)
 }

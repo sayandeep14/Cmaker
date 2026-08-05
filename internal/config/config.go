@@ -24,7 +24,8 @@ const CurrentSchemaVersion = 1
 type Config struct {
 	ProjectName      string            `yaml:"project_name"`
 	SchemaVersion    int               `yaml:"schema_version,omitempty"`
-	Language         string            `yaml:"language,omitempty"` // cpp | c | hybrid (default cpp)
+	Language         string            `yaml:"language,omitempty"`    // cpp | c | hybrid (default cpp)
+	TargetType       string            `yaml:"target_type,omitempty"` // executable | static_library | shared_library (default executable)
 	CppVersion       int               `yaml:"cpp_version,omitempty"`
 	CVersion         int               `yaml:"c_version,omitempty"`
 	Executable       string            `yaml:"executable"`
@@ -35,10 +36,13 @@ type Config struct {
 	Runner           string            `yaml:"runner,omitempty"`     // custom program invoked as `<runner> <file> [args...]` for 'run --only', replacing the default compile-then-run flow entirely (e.g. crun, which compiles and runs in one step); takes priority over 'compiler' when set
 	Sanitizers       []string          `yaml:"sanitizers,omitempty"` // e.g. [address, undefined]
 	WarningsAsErrors bool              `yaml:"warnings_as_errors,omitempty"`
-	CMakeExtra       string            `yaml:"cmake_extra,omitempty"` // raw CMake appended verbatim, for cases the generator doesn't model
-	Configs          map[string]string `yaml:"configs,omitempty"`     // named shortcuts, e.g. {test: "run --only=test1.cpp"}, run via `cmaker <name>`
-	Rust             *RustConfig       `yaml:"rust,omitempty"`        // opt-in Rust crate wired into the build
-	Zig              *ZigConfig        `yaml:"zig,omitempty"`         // opt-in Zig library wired into the build
+	CMakeExtra       string            `yaml:"cmake_extra,omitempty"`    // raw CMake appended verbatim, for cases the generator doesn't model
+	Configs          map[string]string `yaml:"configs,omitempty"`        // named shortcuts, e.g. {test: "run --only=test1.cpp"}, run via `cmaker <name>`
+	Rust             *RustConfig       `yaml:"rust,omitempty"`           // opt-in Rust crate wired into the build
+	Zig              *ZigConfig        `yaml:"zig,omitempty"`            // opt-in Zig library wired into the build
+	Testing          *TestingConfig    `yaml:"testing,omitempty"`        // opt-in ctest wiring for the main executable
+	DisableCcache    bool              `yaml:"disable_ccache,omitempty"` // opt out of the automatic ccache/sccache CMAKE_<LANG>_COMPILER_LAUNCHER wiring (on by default when either is found on PATH)
+	LogsKeep         int               `yaml:"logs_keep,omitempty"`      // how many .cmaker/logs/ build/run logs to retain before pruning (default 5, see internal/logs.DefaultKeep)
 }
 
 // RustConfig describes an optional Rust crate compiled via cargo and linked
@@ -58,6 +62,15 @@ type ZigConfig struct {
 	SrcDir  string `yaml:"src_dir,omitempty"` // default "zig"
 }
 
+// TestingConfig opts a project into ctest wiring: `cmake.Generate` emits
+// `enable_testing()` plus an `add_test()` registering the main executable
+// itself as a test run (the model every current test-oriented template,
+// e.g. catch2, actually uses - the executable *is* the test binary). This
+// is strictly opt-in, same as Rust/Zig: Testing == nil costs nothing.
+type TestingConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
 // Dependency describes a third-party library fetched automatically at
 // configure time via CPM.cmake, instead of assuming it's already installed
 // system-wide.
@@ -74,6 +87,12 @@ type Dependency struct {
 // empty string, meaning "unset, defaults to cpp").
 var ValidLanguages = map[string]bool{
 	"": true, "cpp": true, "c": true, "hybrid": true,
+}
+
+// ValidTargetTypes is the set of values `target_type:` may take (including
+// the empty string, meaning "unset, defaults to executable").
+var ValidTargetTypes = map[string]bool{
+	"": true, "executable": true, "static_library": true, "shared_library": true,
 }
 
 var validCppVersions = map[int]bool{
@@ -99,6 +118,17 @@ func LanguageOrDefault(language string) string {
 	return language
 }
 
+// TargetTypeOrDefault returns targetType with the "executable" default
+// applied, since the field is omitted (empty string) on every project
+// scaffolded before library targets existed - this keeps old cmaker.yaml
+// files working unchanged.
+func TargetTypeOrDefault(targetType string) string {
+	if targetType == "" {
+		return "executable"
+	}
+	return targetType
+}
+
 // Validate checks a Config for internal consistency (supported language,
 // matching version fields, known sanitizer names, a schema version this
 // build understands).
@@ -111,6 +141,9 @@ func Validate(c Config) error {
 	}
 	if !ValidLanguages[c.Language] {
 		return fmt.Errorf("'language: %s' is not one of cpp, c, hybrid", c.Language)
+	}
+	if !ValidTargetTypes[c.TargetType] {
+		return fmt.Errorf("'target_type: %s' is not one of executable, static_library, shared_library", c.TargetType)
 	}
 	lang := LanguageOrDefault(c.Language)
 	if lang == "cpp" || lang == "hybrid" {

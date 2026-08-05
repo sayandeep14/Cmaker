@@ -18,6 +18,9 @@ func TestValidate(t *testing.T) {
 		{"bad sanitizer name", Config{Executable: "main", CppVersion: 17, Sanitizers: []string{"asan"}}, true},
 		{"valid sanitizer name", Config{Executable: "main", CppVersion: 17, Sanitizers: []string{"address"}}, false},
 		{"schema version too new", Config{Executable: "main", CppVersion: 17, SchemaVersion: CurrentSchemaVersion + 1}, true},
+		{"valid static_library target type", Config{Executable: "mylib", CppVersion: 17, TargetType: "static_library"}, false},
+		{"valid shared_library target type", Config{Executable: "mylib", CppVersion: 17, TargetType: "shared_library"}, false},
+		{"unknown target type", Config{Executable: "mylib", CppVersion: 17, TargetType: "header_only"}, true},
 	}
 
 	for _, tt := range tests {
@@ -36,5 +39,14 @@ func TestLanguageOrDefault(t *testing.T) {
 	}
 	if got := LanguageOrDefault("c"); got != "c" {
 		t.Errorf("LanguageOrDefault(\"c\") = %q, want \"c\"", got)
+	}
+}
+
+func TestTargetTypeOrDefault(t *testing.T) {
+	if got := TargetTypeOrDefault(""); got != "executable" {
+		t.Errorf("TargetTypeOrDefault(\"\") = %q, want \"executable\"", got)
+	}
+	if got := TargetTypeOrDefault("static_library"); got != "static_library" {
+		t.Errorf("TargetTypeOrDefault(\"static_library\") = %q, want \"static_library\"", got)
 	}
 }

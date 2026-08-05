@@ -1,0 +1,36 @@
+# cmaker's built-in package registry (§17). A deliberately small, curated
+# list of well-behaved CPM/CMake-friendly libraries - quality and
+# verified-working over trying to mirror all of vcpkg/Conan on day one.
+# Adding a library here is "add a YAML entry," not "edit Go source."
+- name: fmt
+  repo: fmtlib/fmt
+  default_tag: "11.2.0"
+  link: [fmt::fmt]
+  notes: Modern C++ formatting library (the basis for std::format)
+- name: spdlog
+  repo: gabime/spdlog
+  default_tag: v1.17.0
+  link: [spdlog::spdlog]
+  notes: Fast, header-only/compiled C++ logging library
+- name: nlohmann-json
+  repo: nlohmann/json
+  default_tag: v3.12.0
+  link: [nlohmann_json::nlohmann_json]
+  options: ["JSON_BuildTests OFF"]
+  notes: JSON for Modern C++
+- name: cxxopts
+  repo: jarro2783/cxxopts
+  default_tag: v3.3.1
+  link: [cxxopts::cxxopts]
+  notes: Lightweight C++ command-line option parser
+- name: catch2
+  repo: catchorg/Catch2
+  default_tag: v3.15.3
+  link: [Catch2::Catch2WithMain]
+  notes: BDD/unit testing framework for C++ (same library the 'catch2' template uses, at a newer tag)
+- name: googletest
+  repo: google/googletest
+  default_tag: v1.17.0
+  link: [GTest::gtest, GTest::gtest_main]
+  options: ["INSTALL_GTEST OFF"]
+  notes: Google's C++ testing and mocking framework

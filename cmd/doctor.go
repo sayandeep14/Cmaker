@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"cmaker/internal/cmake"
 	"cmaker/internal/config"
 )
 
@@ -41,6 +42,18 @@ var doctorTools = []tool{
 	}},
 	{name: "conan", required: false, installs: map[string]string{
 		"darwin": "pip install conan", "linux": "pip install conan", "windows": "pip install conan",
+	}},
+	{name: "ccache", required: false, installs: map[string]string{
+		"darwin": "brew install ccache", "linux": "sudo apt install ccache", "windows": "choco install ccache",
+	}},
+	{name: "sccache", required: false, installs: map[string]string{
+		"darwin": "brew install sccache", "linux": "see https://github.com/mozilla/sccache", "windows": "choco install sccache",
+	}},
+	{name: "clang-format", required: false, installs: map[string]string{
+		"darwin": "brew install clang-format", "linux": "sudo apt install clang-format", "windows": "install via LLVM releases",
+	}},
+	{name: "clang-tidy", required: false, installs: map[string]string{
+		"darwin": "brew install llvm  (clang-tidy ships with it)", "linux": "sudo apt install clang-tidy", "windows": "install via LLVM releases",
 	}},
 }
 
@@ -89,6 +102,18 @@ func runDoctor() error {
 		fmt.Println(colorize(ansiBold, "Detected toolchains (use with 'cmaker build --compiler=<path>'):"))
 		for _, c := range compilers {
 			fmt.Printf("  -- %s\n", c)
+		}
+	}
+
+	if launcherTool, launcherPath, found := cmake.DetectCompilerLauncher(); found {
+		disabled := false
+		if cfg, ok := config.TryLoad("."); ok {
+			disabled = cfg.DisableCcache
+		}
+		if disabled {
+			fmt.Printf("Compiler cache: %s found (%s) but disabled via cmaker.yaml's disable_ccache\n", launcherTool, launcherPath)
+		} else {
+			fmt.Printf("Compiler cache: %s - %s\n", launcherTool, colorize(ansiGreen, "wired into every configure automatically"))
 		}
 	}
 

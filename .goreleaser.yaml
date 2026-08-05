@@ -61,7 +61,7 @@ homebrew_casks:
       owner: YOUR_GITHUB_USERNAME
       name: homebrew-tap
     directory: Casks
-    homepage: "https://github.com/YOUR_GITHUB_USERNAME/cmaker"
+    homepage: "https://github.com/sayandeep14/Cmaker"
     description: "cmaker scaffolds, configures, and builds CMake-based C++ projects"
     license: "MIT"
     completions:

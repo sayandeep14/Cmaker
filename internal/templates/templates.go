@@ -30,6 +30,7 @@ type Meta struct {
 	Dependencies  []config.Dependency `yaml:"dependencies"`
 	LinkLibraries []string            `yaml:"link_libraries"`
 	CMakeExtra    string              `yaml:"cmake_extra"` // raw CMake, for deps needing more than CPMAddPackage+target_link_libraries (see the ml-eigen template)
+	Testing       bool                `yaml:"testing"`     // if true, scaffolded projects get testing.enabled: true (ctest wiring) - see the catch2 template
 }
 
 // List returns every embedded template's metadata, sorted by name, with

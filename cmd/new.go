@@ -16,13 +16,15 @@ import (
 	tmpl "cmaker/internal/templates"
 )
 
-func newScaffoldFlags(c *cobra.Command) (template *string, lang *string, compiler *string, withRust *bool, withZig *bool, runner *string) {
+func newScaffoldFlags(c *cobra.Command) (template *string, lang *string, compiler *string, withRust *bool, withZig *bool, runner *string, targetType *string, lib *bool) {
 	template = c.Flags().String("template", "default", "project template to use (see 'cmaker templates')")
 	lang = c.Flags().String("lang", "cpp", "project language: cpp, c, or hybrid (only supported with --template=default)")
 	compiler = c.Flags().String("compiler", "", "compiler to use, saved into cmaker.yaml (e.g. clang++-17, or 'zig' to use zig as the C/C++ compiler)")
-	withRust = c.Flags().Bool("with-rust", false, "add a Rust crate wired into the build via cargo (only supported with --template=default)")
-	withZig = c.Flags().Bool("with-zig", false, "add a Zig library wired into the build via zig build-lib (only supported with --template=default)")
+	withRust = c.Flags().Bool("with-rust", false, "add a Rust crate wired into the build via cargo, linked into whichever template you pick")
+	withZig = c.Flags().Bool("with-zig", false, "add a Zig library wired into the build via zig build-lib, linked into whichever template you pick")
 	runner = c.Flags().String("with", "", "custom compile-and-run tool to always use for 'cmaker run' in this project (e.g. crun), saved into cmaker.yaml's 'runner'")
+	targetType = c.Flags().String("target-type", "executable", "target type: executable, static_library, or shared_library (only supported with --template=default, cpp)")
+	lib = c.Flags().Bool("lib", false, "shorthand for --target-type=static_library")
 	return
 }
 
@@ -39,45 +41,72 @@ var initCmd = &cobra.Command{
 }
 
 func init() {
-	newTemplate, newLang, newCompiler, newWithRust, newWithZig, newRunner := newScaffoldFlags(newCmd)
+	newTemplate, newLang, newCompiler, newWithRust, newWithZig, newRunner, newTargetType, newLib := newScaffoldFlags(newCmd)
 	newCmd.RunE = func(cmd *cobra.Command, args []string) error {
 		name := "MyProject"
 		if len(args) == 1 {
 			name = args[0]
 		}
-		return scaffoldProject(name, name, *newTemplate, *newLang, *newCompiler, *newWithRust, *newWithZig, *newRunner)
+		return scaffoldProject(name, name, *newTemplate, *newLang, *newCompiler, *newWithRust, *newWithZig, *newRunner, resolveTargetType(*newTargetType, *newLib))
 	}
 
-	initTemplate, initLang, initCompiler, initWithRust, initWithZig, initRunner := newScaffoldFlags(initCmd)
+	initTemplate, initLang, initCompiler, initWithRust, initWithZig, initRunner, initTargetType, initLib := newScaffoldFlags(initCmd)
 	initCmd.RunE = func(cmd *cobra.Command, args []string) error {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("failed to determine current directory: %w", err)
 		}
 		name := filepath.Base(cwd)
-		return scaffoldProject(".", name, *initTemplate, *initLang, *initCompiler, *initWithRust, *initWithZig, *initRunner)
+		return scaffoldProject(".", name, *initTemplate, *initLang, *initCompiler, *initWithRust, *initWithZig, *initRunner, resolveTargetType(*initTargetType, *initLib))
 	}
+}
+
+// resolveTargetType applies --lib as shorthand for --target-type=static_library,
+// taking priority over an explicit --target-type when both are somehow set.
+func resolveTargetType(targetType string, lib bool) string {
+	if lib {
+		return "static_library"
+	}
+	return targetType
 }
 
 // scaffoldProject writes a new project into root (creating it if it doesn't
 // already exist), using the given project name and the named template
 // (see internal/templates - each embedded subdirectory there is a
-// template, described by its own meta.yaml). --lang, --with-rust, and
-// --with-zig only apply to the "default" template: every other template is
-// a concrete C++ dependency showcase (SFML/raylib/Catch2/...) and composing
-// them with a language switch or a Rust/Zig crate isn't supported yet.
-func scaffoldProject(root string, name string, templateName string, language string, compiler string, withRust bool, withZig bool, runner string) error {
+// template, described by its own meta.yaml). --lang and a non-executable
+// --target-type only apply to the "default" template: every other template
+// is a concrete C++ showcase and composing them with a language switch or
+// library scaffolding isn't supported yet. --with-rust/--with-zig, by
+// contrast, compose with *any* template (§18) - see the withRust/withZig
+// handling below and interop.go's injectInteropUsageHint.
+func scaffoldProject(root string, name string, templateName string, language string, compiler string, withRust bool, withZig bool, runner string, targetType string) error {
 	if !config.ValidLanguages[language] {
 		return fmt.Errorf("unknown --lang %q (expected cpp, c, or hybrid)", language)
+	}
+	targetType = config.TargetTypeOrDefault(targetType)
+	if !config.ValidTargetTypes[targetType] {
+		return fmt.Errorf("unknown --target-type %q (expected executable, static_library, or shared_library)", targetType)
 	}
 	if language != "cpp" && templateName != "default" {
 		return fmt.Errorf("--lang=%s is only supported with --template=default (template %q is C++-specific)", language, templateName)
 	}
-	if withRust && templateName != "default" {
-		return fmt.Errorf("--with-rust is only supported with --template=default (template %q is C++-specific)", templateName)
-	}
-	if withZig && templateName != "default" {
-		return fmt.Errorf("--with-zig is only supported with --template=default (template %q is C++-specific)", templateName)
+	// --with-rust/--with-zig compose with any template (§18): the crate/
+	// library is scaffolded and linked exactly the same way regardless of
+	// which template it lands in - only *how the demo usage is surfaced*
+	// differs (writeInteropDemoMain overwrites the placeholder main() the
+	// 'default' template ships; every other template gets
+	// injectInteropUsageHint instead, which only ever appends to the
+	// template's own real main.cpp, see interop.go).
+	if targetType != "executable" {
+		if templateName != "default" {
+			return fmt.Errorf("--target-type=%s is only supported with --template=default (template %q is C++-specific)", targetType, templateName)
+		}
+		if language != "cpp" {
+			return fmt.Errorf("--target-type=%s doesn't support --lang=%s yet (library scaffolding is C++-only for now)", targetType, language)
+		}
+		if withRust || withZig {
+			return fmt.Errorf("--target-type=%s doesn't compose with --with-rust/--with-zig yet", targetType)
+		}
 	}
 
 	meta, err := tmpl.LoadMeta(templateName)
@@ -102,15 +131,32 @@ func scaffoldProject(root string, name string, templateName string, language str
 		return fmt.Errorf("failed to create build/: %w", err)
 	}
 
+	executableName := "main"
+	libName := ""
+	if targetType != "executable" {
+		// A library's CMake target is named after the project, not "main" -
+		// add_library(main STATIC ...) would be a confusing target name,
+		// and consumers linking against it want target_link_libraries(app
+		// PRIVATE <projectname>), not PRIVATE main. filepath.Base guards
+		// against 'name' doubling as a path (e.g. 'cmaker new ./sub/mylib'
+		// or 'cmaker new /tmp/mylib', where root == name) - a CMake target
+		// name and a header directory name can't contain slashes.
+		libName = filepath.Base(name)
+		executableName = libName
+	}
+
 	cfg := config.Config{
 		ProjectName:   name,
 		SchemaVersion: config.CurrentSchemaVersion,
-		Executable:    "main",
+		Executable:    executableName,
 		IncludeDirs:   []string{"include"},
 		LinkLibraries: meta.LinkLibraries,
 		Dependencies:  meta.Dependencies,
 		Compiler:      compiler,
 		Runner:        runner,
+	}
+	if targetType != "executable" {
+		cfg.TargetType = targetType
 	}
 
 	switch language {
@@ -130,9 +176,17 @@ func scaffoldProject(root string, name string, templateName string, language str
 	default:
 		cfg.CppVersion = meta.CppVersion
 		cfg.CMakeExtra = meta.CMakeExtra
-		if err := tmpl.WriteFiles(meta.Name, root); err != nil {
+		if targetType != "executable" {
+			if err := writeLibrarySources(root, libName); err != nil {
+				return fmt.Errorf("failed to write library sources: %w", err)
+			}
+		} else if err := tmpl.WriteFiles(meta.Name, root); err != nil {
 			return fmt.Errorf("failed to write template files: %w", err)
 		}
+	}
+
+	if meta.Testing {
+		cfg.Testing = &config.TestingConfig{Enabled: true}
 	}
 
 	if withRust {
@@ -148,8 +202,12 @@ func scaffoldProject(root string, name string, templateName string, language str
 		}
 	}
 	if withRust || withZig {
-		if err := writeInteropDemoMain(root, language, withRust, withZig); err != nil {
-			return fmt.Errorf("failed to write interop demo main: %w", err)
+		if templateName == "default" {
+			if err := writeInteropDemoMain(root, language, withRust, withZig); err != nil {
+				return fmt.Errorf("failed to write interop demo main: %w", err)
+			}
+		} else if err := injectInteropUsageHint(root, withRust, withZig); err != nil {
+			return fmt.Errorf("failed to add Rust/Zig usage hint: %w", err)
 		}
 	}
 
@@ -160,8 +218,14 @@ func scaffoldProject(root string, name string, templateName string, language str
 	if err := os.WriteFile(filepath.Join(root, "cmaker.yaml"), data, 0644); err != nil {
 		return fmt.Errorf("failed to write cmaker.yaml: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("build/\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("build/\n.cmaker/\n"), 0644); err != nil {
 		return fmt.Errorf("failed to write .gitignore: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".clang-format"), []byte(defaultClangFormat), 0644); err != nil {
+		return fmt.Errorf("failed to write .clang-format: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".clang-tidy"), []byte(defaultClangTidy), 0644); err != nil {
+		return fmt.Errorf("failed to write .clang-tidy: %w", err)
 	}
 	if err := cmake.Generate(root, cfg); err != nil {
 		return fmt.Errorf("failed to write CMakeLists.txt: %w", err)
@@ -176,7 +240,7 @@ func scaffoldProject(root string, name string, templateName string, language str
 	// run offline) - the scaffold itself is still valid, so this does not
 	// fail the command.
 	infof("Running initial CMake configuration...")
-	configArgs := []string{"-S", root, "-B", filepath.Join(root, "build"), cmake.PolicyVersionMinFlag}
+	configArgs := append([]string{"-S", root, "-B", filepath.Join(root, "build")}, cmake.StandardConfigureFlags(cfg)...)
 	configArgs = append(configArgs, cmake.CompilerArgs(cfg.Compiler, cfg.Language)...)
 	configCmd := exec.Command("cmake", configArgs...)
 	var stderr bytes.Buffer
@@ -263,4 +327,92 @@ func writeHybridSources(root string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(root, "src", "main.cpp"), []byte(hybridMainCpp), 0644)
+}
+
+const libraryHeaderTemplate = `#ifndef %s
+#define %s
+
+namespace %s {
+
+int add(int a, int b);
+
+}  // namespace %s
+
+#endif
+`
+
+const librarySourceTemplate = `#include "%s/%s.h"
+
+namespace %s {
+
+int add(int a, int b) {
+    return a + b;
+}
+
+}  // namespace %s
+`
+
+const libraryDemoTemplate = `#include <iostream>
+#include "%s/%s.h"
+
+int main() {
+    std::cout << "%s::add(2, 3) = " << %s::add(2, 3) << "\n";
+    return 0;
+}
+`
+
+// writeLibrarySources scaffolds a real, working example of the
+// public/private header split a library needs (unlike an app, where a flat
+// include/ works fine): a public header under include/<name>/<name>.h, its
+// implementation in src/<name>.cpp, and an examples/demo.cpp consumer so
+// "does my library actually work" stays a one-command `cmaker run` answer
+// (see internal/cmake.Generate's demo-executable wiring).
+func writeLibrarySources(root string, name string) error {
+	ident := sanitizeIdentifier(name)
+	ns := strings.ToLower(ident)
+	guard := strings.ToUpper(ident) + "_H"
+
+	headerDir := filepath.Join(root, "include", name)
+	if err := os.MkdirAll(headerDir, 0755); err != nil {
+		return fmt.Errorf("failed to create include/%s/: %w", name, err)
+	}
+	header := fmt.Sprintf(libraryHeaderTemplate, guard, guard, ns, ns)
+	if err := os.WriteFile(filepath.Join(headerDir, name+".h"), []byte(header), 0644); err != nil {
+		return err
+	}
+
+	source := fmt.Sprintf(librarySourceTemplate, name, name, ns, ns)
+	if err := os.WriteFile(filepath.Join(root, "src", name+".cpp"), []byte(source), 0644); err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Join(root, "examples"), 0755); err != nil {
+		return fmt.Errorf("failed to create examples/: %w", err)
+	}
+	demo := fmt.Sprintf(libraryDemoTemplate, name, name, ns, ns)
+	return os.WriteFile(filepath.Join(root, "examples", "demo.cpp"), []byte(demo), 0644)
+}
+
+// sanitizeIdentifier turns an arbitrary project name into a valid C++
+// identifier (for a namespace name / header guard): non-alphanumeric
+// characters become underscores, and a leading digit gets a leading
+// underscore prepended.
+func sanitizeIdentifier(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	ident := b.String()
+	if ident == "" {
+		return "_"
+	}
+	if ident[0] >= '0' && ident[0] <= '9' {
+		return "_" + ident
+	}
+	return ident
 }

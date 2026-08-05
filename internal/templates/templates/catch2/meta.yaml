@@ -1,6 +1,7 @@
 name: catch2
 description: Catch2 v3 test scaffold, fetched automatically via CPM.cmake
 cpp_version: 17
+testing: true
 dependencies:
   - name: Catch2
     repo: catchorg/Catch2

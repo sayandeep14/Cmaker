@@ -27,12 +27,20 @@ Hello from Cmaker!
 - [The `cmaker.yaml` config file](#the-cmakeryaml-config-file)
 - [Templates](#templates)
 - [Languages: C, C++, and hybrid projects](#languages-c-c-and-hybrid-projects)
+- [Library project targets](#library-project-targets)
 - [Dependencies (fetched automatically via CPM)](#dependencies-fetched-automatically-via-cpm)
+- [Package install (a real dependency manager UX)](#package-install-a-real-dependency-manager-ux)
+  - [Supply-chain auditing (`cmaker audit`)](#supply-chain-auditing-cmaker-audit)
 - [Compiler selection](#compiler-selection)
+- [Build speed: parallelism and compiler caching](#build-speed-parallelism-and-compiler-caching)
+- [Formatting and linting (`cmaker fmt` / `cmaker lint`)](#formatting-and-linting-cmaker-fmt--cmaker-lint)
 - [Sanitizers and warnings-as-errors](#sanitizers-and-warnings-as-errors)
+- [Testing (`ctest`)](#testing-ctest)
 - [Rust and Zig interop](#rust-and-zig-interop)
 - [Ad hoc single-file compiles (`--only`)](#ad-hoc-single-file-compiles---only)
 - [Named configs (your own shortcuts)](#named-configs-your-own-shortcuts)
+- [Code generation (`generate accessors`)](#code-generation-generate-accessors)
+- [Build/run logs and AI-assisted healing (`cmaker logs` / `cmaker heal`)](#buildrun-logs-and-ai-assisted-healing-cmaker-logs--cmaker-heal)
 - [The interactive dashboard (TUI)](#the-interactive-dashboard-tui)
 - [Shell completions](#shell-completions)
 - [Global flags](#global-flags)
@@ -49,8 +57,21 @@ Hello from Cmaker!
 ```bash
 git clone https://github.com/<you>/cmaker.git
 cd cmaker
+make install   # builds ./cmaker and installs it to /usr/local/bin (sudo)
+```
+
+`make install` is also the command to re-run after pulling or making local
+changes — it rebuilds from the current working tree and overwrites whatever
+`cmaker` is currently on `PATH`, so the installed binary never silently
+drifts out of sync with the source (the version it reports is derived from
+`git describe`, so `cmaker --version` tells you exactly what's installed).
+
+Prefer not to install system-wide, or don't have `sudo`? `make build`
+just builds `./cmaker` in the repo without touching `PATH`:
+
+```bash
 go build -o cmaker .
-sudo mv cmaker /usr/local/bin/   # or anywhere on your PATH
+# or: make build
 ```
 
 **Requirements to build cmaker itself:** Go 1.25+.
@@ -89,6 +110,7 @@ available once you need more than "hello world."
 | `cmaker create <name> [flags]` | Composable scaffolding — same as `new` but built for stacking flags like `--with-rust --with-zig` |
 | `cmaker build` | Configure + build (`cmake -S`/`cmake --build`) |
 | `cmaker run` | Build if needed, then run the executable, streaming its output |
+| `cmaker test` | Build, then run the project's `ctest` suite (needs `testing.enabled` in `cmaker.yaml`) |
 | `cmaker clean` | Wipe and recreate `build/` |
 | `cmaker watch` | Rebuild + rerun automatically on file changes (Ctrl+C to stop) |
 | `cmaker doctor` | Check your toolchain (cmake, compilers, Rust/Zig if your project needs them) and print install hints |
@@ -112,6 +134,7 @@ A fully-loaded example, showing every field:
 project_name: myapp
 schema_version: 1
 language: cpp              # cpp | c | hybrid (omit for cpp, the default)
+target_type: executable    # executable | static_library | shared_library (omit for executable, the default)
 cpp_version: 20
 c_version: 17               # only used when language is c or hybrid
 executable: main
@@ -126,12 +149,16 @@ dependencies:
     options: ["BUILD_EXAMPLES OFF"]
 compiler: clang++-17         # optional override; omit to let CMake pick
 runner: crun                 # optional: custom compile-and-run tool for 'run --only' (see below)
+disable_ccache: false        # opt out of automatic ccache/sccache wiring (on by default when found)
+logs_keep: 5                 # how many .cmaker/logs/ build/run logs to retain (default 5)
 sanitizers: [address, undefined]
 warnings_as_errors: true
 cmake_extra: |               # raw CMake, appended for anything the generator doesn't model
   message(STATUS "hello from cmake_extra")
 configs:
-  test: "run --only=tests/scratch.cpp"
+  scratch: "run --only=tests/scratch.cpp"
+testing:
+  enabled: true                # wires enable_testing()/add_test() for 'cmaker test' (ctest)
 rust:
   enabled: true
   crate_dir: rust
@@ -192,6 +219,48 @@ sitting next to each other.
 
 ---
 
+## Library project targets
+
+By default `cmaker new` scaffolds an executable. Pass `--lib` (shorthand for
+`--target-type=static_library`) or `--target-type=shared_library` to
+scaffold a library instead:
+
+```bash
+cmaker new mylib --lib                       # static library
+cmaker new mylib --target-type=shared_library # shared library
+```
+
+Unlike an executable's flat `include/`, a library gets the public/private
+header split real library code actually uses:
+
+```
+mylib/
+├── include/mylib/mylib.h   # public header, exported at 'target_include_directories(... PUBLIC ...)'
+├── src/mylib.cpp           # implementation
+└── examples/demo.cpp       # a real consumer, linked against the library target
+```
+
+`examples/demo.cpp` isn't a stub - it's a working example that calls into
+the library, compiled as its own `<name>_demo` executable and linked
+against the library target. That's what makes `cmaker run` still work on a
+library project: it builds and runs the demo, so "does my library actually
+work" stays a one-command answer. A library with no `examples/*.cpp` file
+makes `cmaker run` fail with a clear error pointing at `cmaker build`
+instead, rather than trying to run something that doesn't exist.
+
+`cmake --install build --prefix <dir>` also works out of the box: cmaker
+generates real `install()` rules (`GNUInstallDirs`, headers, and an
+exported `<name>Config.cmake`), so a cmaker-built library is genuinely
+consumable from another CMake project via `find_package(<name>)`, not just
+buildable in place.
+
+**Known limits today:** library scaffolding only composes with the default
+C++ template (not `--lang=c`/`hybrid`, not `--with-rust`/`--with-zig`, not
+the dependency-bearing templates like `raylib`/`sfml`) - see `ROADMAP.md`
+§16 for what's tracked as follow-up.
+
+---
+
 ## Dependencies (fetched automatically via CPM)
 
 Templates like `sfml`/`raylib`/`catch2`/`ml-eigen`/`backend` declare a
@@ -206,6 +275,72 @@ You can add your own dependency to any project by hand-editing
 it up on the next run. `repo:` accepts either the GitHub `"owner/repo"`
 shorthand or a full git URL (needed for repos not on GitHub, e.g. Eigen's
 GitLab home) — `cmaker` picks the right CPM keyword automatically.
+
+---
+
+## Package install (a real dependency manager UX)
+
+Hand-editing `dependencies:` works, but you have to already know a
+library's exact repo/tag/CMake target names. `cmaker install` closes that
+gap — name a library, get a working, linked dependency in one command:
+
+```bash
+cmaker search json           # discover what's available
+cmaker install nlohmann-json # adds it to cmaker.yaml and fetches it immediately
+cmaker list                  # see what's currently installed
+cmaker uninstall nlohmann-json
+```
+
+`cmaker install <name>` looks `<name>` up in cmaker's built-in registry (a
+small, curated list of well-behaved CPM-friendly libraries — currently
+`fmt`, `spdlog`, `nlohmann-json`, `cxxopts`, `catch2`, `googletest`),
+appends the resolved dependency to `cmaker.yaml`, and reconfigures right
+away so the fetch happens immediately (like `npm install`/`cargo add`), not
+silently deferred to the next build. An unknown name gets a clear error
+with close-match suggestions instead of a dead end.
+
+For anything not in the registry, `--git` is the escape hatch — any
+git-hosted library with a real `CMakeLists.txt`:
+
+```bash
+cmaker install mylib --git=https://github.com/me/mylib --tag=v1.0.0 --link=mylib::mylib
+```
+
+### The lockfile (`cmaker.lock`)
+
+A `tag:` in `cmaker.yaml` says what you *asked* for; a mutable tag (or a
+branch used as one) can silently point somewhere different later. Every
+`cmaker install` and `cmaker build` refreshes `cmaker.lock` with the exact
+commit CPM actually resolved for each dependency — modeled after
+`Cargo.lock`/`package-lock.json`: human-diffable, meant to be checked into
+git, regenerated rather than hand-edited.
+
+### Supply-chain auditing (`cmaker audit`)
+
+`cmaker.lock`'s exact resolved commits make a real question askable:
+"what am I actually pulling in, and is any of it known-bad?"
+
+```bash
+cmaker audit
+```
+
+Queries [OSV.dev](https://osv.dev) for known vulnerabilities affecting each
+dependency's exact locked *commit* (not just its tag — a tag can move, a
+commit can't), and looks up each GitHub-hosted dependency's declared
+license. Exits non-zero if any known vulnerability is found, so it's
+CI-usable the same way `cmaker test`/`cmaker fmt --check` are:
+
+```
+$ cmaker audit
+-- Auditing 1 locked dependencies against OSV.dev...
+fmt (fmtlib/fmt@40626af8) - license: MIT
+  no known vulnerabilities
+-- No known vulnerabilities found.
+```
+
+License lookups are also available from `cmaker list --licenses` (a
+network call per dependency, so it's opt-in — plain `cmaker list` stays
+instant and offline).
 
 ---
 
@@ -242,6 +377,52 @@ at once.
 
 ---
 
+## Build speed: parallelism and compiler caching
+
+`cmaker build` always passes `-j <NumCPU>` to `cmake --build` — no more
+accidental single-threaded builds. Override it per-invocation with
+`--jobs`/`-j`:
+
+```bash
+cmaker build --jobs=4
+```
+
+If `ccache` or `sccache` is on `PATH`, `cmaker` automatically wires it in as
+`CMAKE_C_COMPILER_LAUNCHER`/`CMAKE_CXX_COMPILER_LAUNCHER` on every
+configure — a real, free speed-up on rebuilds (especially for the
+CPM-fetched-dependency templates, which otherwise recompile their
+dependency from source every clean build). `cmaker doctor` reports whether
+one was found and is active. Opt out per-project if you don't want it:
+
+```yaml
+disable_ccache: true
+```
+
+Every configure also gets `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` for free —
+`build/compile_commands.json` is what makes `cmaker lint` (and any
+IDE/clangd pointed at the project) work.
+
+---
+
+## Formatting and linting (`cmaker fmt` / `cmaker lint`)
+
+Every scaffolded project gets a `.clang-format` and a `.clang-tidy` (a
+deliberately curated, low-noise check list — `bugprone-*`, `performance-*`,
+`clang-analyzer-*`, plus a couple of high-value `modernize-*`/`readability-*`
+checks) so there's one blessed way to format/lint a cmaker project instead
+of everyone hand-rolling their own invocation:
+
+```bash
+cmaker fmt          # clang-format -i, project-wide
+cmaker fmt --check  # dry-run: non-zero exit if anything would change (CI-friendly)
+cmaker lint         # clang-tidy, using build/compile_commands.json
+```
+
+`cmaker lint` needs `build/compile_commands.json` to exist — run `cmaker
+build` at least once first.
+
+---
+
 ## Sanitizers and warnings-as-errors
 
 ```yaml
@@ -255,30 +436,80 @@ Add either (or both) to `cmaker.yaml` and the next build compiles with
 
 ---
 
+## Testing (`ctest`)
+
+Opt in with `testing: { enabled: true }` in `cmaker.yaml` — the `catch2`
+template does this for you automatically:
+
+```yaml
+testing:
+  enabled: true
+```
+
+This wires `enable_testing()` and `add_test(NAME <executable> COMMAND
+<executable>)` into the generated `CMakeLists.txt`, registering your main
+executable itself as the test run — the model the `catch2` template
+already uses (its `main()` *is* the Catch2 test runner). Then:
+
+```bash
+cmaker test              # build, then run ctest --output-on-failure
+cmaker test --release    # same, but a Release build first
+```
+
+`cmaker test` fails fast with a clear message if `testing.enabled` isn't
+set, instead of surfacing `ctest`'s "No tests were found!!!" error. Exit
+code and `--output-on-failure` output are forwarded straight from `ctest`,
+so it composes with CI the same way `cmaker build`/`cmaker run` do. This
+covers the single-executable case cmaker supports today — dedicated test
+targets separate from the main executable (multi-target projects) are
+tracked in `ROADMAP.md` §16.
+
+---
+
 ## Rust and Zig interop
 
-Add a Rust crate or a Zig library to any default-template C/C++/hybrid
-project in one shot:
+Add a Rust crate or a Zig library to *any* template in one shot — not just
+the generic `default` one:
 
 ```bash
 cmaker new myapp --with-rust             # adds rust/ + a demo calling into it
 cmaker new myapp --with-zig              # adds zig/ + a demo calling into it
 cmaker new myapp --with-rust --with-zig  # both, in one combined main()
+cmaker create myapi --backend --with-rust  # cpp-httplib server + a linked Rust crate
 ```
 
 Each scaffolds a small crate/library exposing a plain C-ABI function
-(`rust_add`/`zig_add`), a matching hand-written C header, and rewrites your
-project's `main()` to actually call into it — not a stub, a real working
-example you build on. Under the hood: `cargo build --release` / `zig
-build-lib` run as CMake custom commands, and the resulting static library
-links straight into your executable.
+(`rust_add`/`zig_add`) and a matching hand-written C header. Under the
+hood: `cargo build --release` / `zig build-lib` run as CMake custom
+commands, and the resulting static library links straight into your
+executable.
+
+**How the demo shows up depends on the template.** The `default` template's
+`main()` is just a placeholder, so `--with-rust`/`--with-zig` rewrite it
+into a real, working example that calls into the crate — not a stub. Any
+other template (`--backend`, `--ml`, `raylib`, ...) has its *own* real
+code (an HTTP server, a linear-algebra demo, ...) that never gets
+overwritten: the crate is scaffolded and linked exactly the same way, but
+you get a real `#include` for it plus a short comment showing how to call
+it, appended right after the template's existing includes — e.g.
+`cmaker create myapi --backend --with-rust` leaves the cpp-httplib service
+fully intact and adds:
+
+```cpp
+#include <httplib.h>
+#include <iostream>
+#include "rustlib.h"
+
+// --- cmaker: linked native crate(s) available, see below ---
+// Rust (rust/src/lib.rs) is linked into this target - call it like:
+//   int sum = rust_add(2, 3);
+```
 
 `cmaker doctor` only checks for `cargo`/`rustc`/`zig` when your project's
 `cmaker.yaml` actually declares `rust.enabled`/`zig.enabled` — a plain
 project never sees (or pays for) a toolchain check it doesn't need.
 
-**Known limits today:** `--with-rust`/`--with-zig` only compose with
-`--template=default`; the Rust/Zig crate/library name is fixed
+**Known limits today:** the Rust/Zig crate/library name is fixed
 (`rustlib`/`ziglib`); and a hybrid project's `--compiler` override only
 covers the C++ side unless you use `--compiler=zig` (see above). See
 `ROADMAP.md` §12 for what's still open (a typed `cxx`-bridge option, "zig as
@@ -345,10 +576,10 @@ Save any `cmaker` invocation as a shortcut, then run it by name — a small
 task runner in the spirit of `npm run <script>` or `just`:
 
 ```bash
-cmaker add config test 'run --only=tests/scratch.cpp'
-cmaker test                 # runs the saved command
-cmaker configs              # lists everything you've saved
-cmaker remove config test   # deletes it
+cmaker add config scratch 'run --only=tests/scratch.cpp'
+cmaker scratch               # runs the saved command
+cmaker configs                # lists everything you've saved
+cmaker remove config scratch  # deletes it
 ```
 
 Saved shortcuts live in `cmaker.yaml`'s `configs:` map, so they travel with
@@ -356,6 +587,102 @@ the project. `cmaker add config` refuses to overwrite the name of a real
 built-in command (`build`, `run`, `doctor`, ...) so a saved shortcut can
 never become silently unreachable. They also show up automatically in the
 TUI sidebar — no separate setup needed there.
+
+---
+
+## Code generation (`generate accessors`)
+
+Generate getter/setter accessors for a class's private members, using an
+LLM to do the one part a hand-rolled C++ parser is genuinely bad at
+(understanding types, constness, and which members are non-public):
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+cmaker generate accessors Pqr.cpp Abc
+# or:
+cmaker generate accessors --file=include/Pqr.hpp --class=Abc --dry-run
+```
+
+The LLM is only ever trusted to *identify* members (name, type, constness,
+whether the getter should return by reference) — it never writes C++ code
+directly into your file. `cmaker` renders the actual getter/setter text
+itself from a fixed template, so the generated code is always consistent
+and reviewable, not whatever the model happened to write that run.
+
+Output is inserted into the class body just before its closing brace,
+wrapped in a greppable marker comment:
+
+```cpp
+    // --- cmaker generated accessors: begin ---
+    public:
+    int getAge() const { return age_; }
+    void setAge(int value) { age_ = value; }
+    // --- cmaker generated accessors: end ---
+```
+
+Re-running the command on the same class finds and replaces this block in
+place instead of duplicating it — safe to run again after adding or
+renaming members.
+
+- `--model string` — override the Anthropic model (default: a fast/cheap
+  model, since this is a small structured-extraction task, not a large
+  generation one)
+- `--dry-run` — print what would be generated without writing the file
+- Requires the `ANTHROPIC_API_KEY` environment variable; cmaker talks
+  directly to the Anthropic Messages API (no separate provider config).
+- Const members get a getter only, since there's nothing sensible to
+  mutate. Non-trivial types (`std::string`, containers, other class types)
+  get a `const Type&` getter/setter parameter instead of copying by value.
+
+---
+
+## Build/run logs and AI-assisted healing (`cmaker logs` / `cmaker heal`)
+
+Every `cmaker build`/`cmaker run` captures its combined output under
+`.cmaker/logs/` (the last 5 by default — `logs_keep:` in `cmaker.yaml` to
+change that), independently of any AI feature — useful on its own:
+
+```bash
+cmaker logs        # list recent attempts, newest first
+cmaker logs 1       # print the most recent one in full
+```
+
+When a build (or a run) actually fails, `cmaker heal` reads the most recent
+failing log, the file(s) the compiler's error output pointed at, and asks
+an LLM (Anthropic; requires `ANTHROPIC_API_KEY`) to suggest a fix:
+
+```bash
+cmaker heal
+```
+
+This is deliberately **suggest, don't touch**: nothing is ever written to
+disk. The model is only ever trusted to propose corrected file content —
+`cmaker` computes the actual diff itself (a real, deterministic line-based
+diff, not text trusted verbatim from the model) and prints it for you to
+review and apply by hand (or via `git apply`). Two things this design
+guards against, both caught by testing against a real model rather than
+assumed away:
+
+- **The model can get unified-diff arithmetic wrong.** An early version
+  asked the LLM to hand-write the diff directly; a live test produced a
+  hunk header whose line count didn't match its own body, which `git
+  apply` rejected as corrupt. Asking for full corrected file content
+  instead (a task models are actually good at) and diffing it in Go
+  sidesteps that entirely — the diff's structure is never in question.
+- **A stray trailing line can silently become part of "the fix."** Nothing
+  bounds the end of the last file block in a response, so if a model
+  echoes an extra line out of habit, it would otherwise land in the
+  patched file unnoticed. `cmaker heal` defends against this and against
+  markdown code fences the model adds despite being told not to.
+
+```bash
+cmaker heal --kind=build   # only consider build failures, not run
+cmaker heal --model=...    # override the Anthropic model used
+```
+
+**`--apply`** (writing the suggested fix to disk automatically, gated
+behind a clean git working tree) is a deliberate, not-yet-implemented
+follow-up — see `ROADMAP.md` §24. v1 only ever suggests.
 
 ---
 
@@ -420,6 +747,8 @@ Scaffold a new project into `./<name>` (defaults to `MyProject` if omitted).
 - `--with-rust` — add a Rust crate (only with `--template=default`)
 - `--with-zig` — add a Zig library (only with `--template=default`)
 - `--with string` — always run this project via a custom compile-and-run tool (e.g. `crun`), saved as `runner:` in `cmaker.yaml` (see [above](#using-a-custom-compile-and-run-tool-eg-crun))
+- `--lib` — shorthand for `--target-type=static_library` (see [above](#library-project-targets); only with `--template=default`, cpp)
+- `--target-type string` — `executable`, `static_library`, or `shared_library` (default `"executable"`; only with `--template=default`, cpp)
 </details>
 
 <details>
@@ -434,11 +763,13 @@ new subdirectory. Project name is inferred from the directory's basename.
 
 Same flags as `new`, plus:
 
-- `--backend` — *not implemented yet* (see `ROADMAP.md` §13)
-- `--ml` — *not implemented yet* (see `ROADMAP.md` §13)
+- `--backend` — shorthand for `--template=backend` (a cpp-httplib HTTP service)
+- `--ml` — shorthand for `--template=ml-eigen` (an Eigen linear-algebra starter)
 
-These two fail with a clear error rather than silently no-opping, so the
-CLI surface exists ahead of the feature landing.
+Both compose with `--with-rust`/`--with-zig` (see
+[above](#rust-and-zig-interop)) and with each other's mutual exclusivity
+enforced — `--backend --ml` and `--backend --template=raylib` both fail
+with a clear error instead of silently picking one.
 </details>
 
 <details>
@@ -447,17 +778,32 @@ CLI surface exists ahead of the feature landing.
 - `--release` — build with `CMAKE_BUILD_TYPE=Release` (`-O3`)
 - `--compiler string` — override the compiler for this build only
 - `--only string` — compile a single source file ad hoc (see [above](#ad-hoc-single-file-compiles---only))
+- `--jobs int` / `-j` — parallel build jobs (default: number of CPUs, see [above](#build-speed-parallelism-and-compiler-caching))
 </details>
 
 <details>
 <summary><code>cmaker run [-- args...] [flags]</code></summary>
 
 Builds only if a tracked source file is newer than the existing binary,
-then runs it. Args after `--` are forwarded to your program.
+then runs it. Args after `--` are forwarded to your program. On a library
+project (see [above](#library-project-targets)), builds and runs its
+`examples/demo.cpp` demo instead, or fails with a clear error if there
+isn't one.
 
 - `--only string` — compile and run a single source file ad hoc
 - `--compiler string` — compiler to use for `--only`
 - `--runner string` — custom compile-and-run tool to invoke instead (e.g. `crun`), overriding `cmaker.yaml`'s `runner` — applies to `--only` and to a whole-project `run` (see [above](#using-a-custom-compile-and-run-tool-eg-crun))
+</details>
+
+<details>
+<summary><code>cmaker test [flags]</code></summary>
+
+Builds (if needed), then runs `ctest --output-on-failure`. Requires
+`testing.enabled: true` in `cmaker.yaml` (see [above](#testing-ctest));
+fails fast with a clear error otherwise instead of `ctest`'s own
+"No tests were found!!!".
+
+- `--release` — build with `CMAKE_BUILD_TYPE=Release` (`-O3`) before testing
 </details>
 
 <details>
@@ -476,9 +822,28 @@ Rebuilds and reruns automatically whenever files in `src/`, `include/`, or
 <details>
 <summary><code>cmaker doctor</code></summary>
 
-Checks `cmake`/`make`/`ninja`/`clang++`/`g++`/`vcpkg`/`conan`, lists every
-detected compiler toolchain, and — only if your project's `cmaker.yaml`
-declares it needs them — checks `cargo`/`rustc`/`zig` too.
+Checks `cmake`/`make`/`ninja`/`clang++`/`g++`/`vcpkg`/`conan`/`ccache`/
+`sccache`/`clang-format`/`clang-tidy`, lists every detected compiler
+toolchain and whether a compiler cache is actively wired in, and — only if
+your project's `cmaker.yaml` declares it needs them — checks
+`cargo`/`rustc`/`zig` too.
+</details>
+
+<details>
+<summary><code>cmaker fmt [--check]</code></summary>
+
+Formats every tracked source file with `clang-format` (see
+[above](#formatting-and-linting-cmaker-fmt--cmaker-lint)).
+
+- `--check` — dry-run: don't write anything, exit non-zero if formatting would change (CI-friendly)
+</details>
+
+<details>
+<summary><code>cmaker lint</code></summary>
+
+Lints every tracked source file with `clang-tidy`, using
+`build/compile_commands.json` as its compilation database. Run `cmaker
+build` first if it doesn't exist yet.
 </details>
 
 <details>
@@ -506,6 +871,79 @@ Lists every saved named shortcut for the current project.
 </details>
 
 <details>
+<summary><code>cmaker install &lt;name&gt; [flags]</code></summary>
+
+Adds a dependency (see [above](#package-install-a-real-dependency-manager-ux))
+and fetches it immediately.
+
+- `--git string` — install a git-hosted library not in the built-in registry, by URL (requires `--tag`)
+- `--tag string` — git tag/branch to fetch (required with `--git`)
+- `--link strings` — CMake target(s) to link, e.g. `--link=fmt::fmt` (required with `--git`; comma-separate for multiple)
+- `--options strings` — extra `CPMAddPackage` `OPTIONS` lines (only with `--git`)
+- `--download-only` — fetch source but don't `add_subdirectory` it (only with `--git`)
+</details>
+
+<details>
+<summary><code>cmaker uninstall &lt;name&gt;</code></summary>
+
+Removes a dependency from `cmaker.yaml` (and its `cmaker.lock` entry, if any).
+</details>
+
+<details>
+<summary><code>cmaker list</code> (alias <code>cmaker installed</code>)</summary>
+
+Lists every dependency currently declared in `cmaker.yaml`.
+
+- `--licenses` — also look up each GitHub-hosted dependency's declared license (a network call per dependency)
+</details>
+
+<details>
+<summary><code>cmaker search &lt;term&gt;</code></summary>
+
+Searches the built-in package registry by name or description.
+</details>
+
+<details>
+<summary><code>cmaker audit</code></summary>
+
+Checks `cmaker.lock`'s locked dependencies for known vulnerabilities (via
+OSV.dev, by exact commit) and surfaces licenses (see
+[above](#supply-chain-auditing-cmaker-audit)). Requires `cmaker.lock` to
+exist. Exits non-zero if any known vulnerability is found.
+</details>
+
+<details>
+<summary><code>cmaker generate accessors [file] [class] [flags]</code></summary>
+
+Generates getter/setter accessors for a class's non-public members (see
+[above](#code-generation-generate-accessors)). Requires `ANTHROPIC_API_KEY`.
+
+- `--file string` / `-f` — source/header file containing the class (or first positional arg)
+- `--class string` / `-c` — class or struct name (or second positional arg)
+- `--model string` — override the Anthropic model used
+- `--dry-run` — print the generated accessors without writing the file
+</details>
+
+<details>
+<summary><code>cmaker logs [n]</code></summary>
+
+Lists recent `.cmaker/logs/` build/run captures (newest first), or prints
+the full content of the nth one (see
+[above](#buildrun-logs-and-ai-assisted-healing-cmaker-logs--cmaker-heal)).
+</details>
+
+<details>
+<summary><code>cmaker heal [flags]</code></summary>
+
+Suggests a fix for the most recent build/run failure (see
+[above](#buildrun-logs-and-ai-assisted-healing-cmaker-logs--cmaker-heal)).
+Requires `ANTHROPIC_API_KEY`. Nothing is written to disk.
+
+- `--kind string` — only consider `build` or `run` failures (default: either, most recent wins)
+- `--model string` — override the Anthropic model used
+</details>
+
+<details>
 <summary><code>cmaker tui</code></summary>
 
 Launches the interactive dashboard explicitly (same as bare `cmaker` in a
@@ -519,11 +957,15 @@ terminal).
 ```
 myapp/
 ├── cmaker.yaml          # the one file you hand-edit
+├── cmaker.lock           # generated once you 'cmaker install' anything - commit this
 ├── CMakeLists.txt       # generated - don't hand-edit, cmaker regenerates it
 ├── .gitignore           # ignores build/
+├── .clang-format         # used by 'cmaker fmt'
+├── .clang-tidy           # used by 'cmaker lint'
 ├── src/                 # your .cpp/.c sources
 ├── include/              # your headers
 ├── build/                # cmake's build directory (safe to delete: cmaker clean)
+├── .cmaker/logs/          # build/run log captures, gitignored (see 'cmaker logs'/'cmaker heal')
 ├── rust/                 # only if --with-rust
 └── zig/                  # only if --with-zig
 ```
