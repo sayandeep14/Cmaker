@@ -1378,7 +1378,7 @@ package ecosystem (npm, cargo) has gone through.
   assumed away, since "cmaker audit found nothing" should never be
   over-read as "definitely nothing to find."
 
-## 23. Extensibility: user/community templates and registry entries
+## 23. Extensibility: user/community templates and registry entries — ✅ DONE (2026-08-07)
 
 Motivation: the embedded (`go:embed`) templates (§4) and the built-in
 package registry (§17) are both compiled into the binary today - great for
@@ -1387,23 +1387,65 @@ registry entry requires a cmaker release. For this to become "the default
 tool for C++ work" rather than "a tool with a fixed menu," people need to
 be able to extend it without forking.
 
-- [ ] User-local templates: a `~/.cmaker/templates/` directory (or
-      project-local `.cmaker/templates/`) checked in addition to the
-      embedded ones, same `meta.yaml` format as §4 - `cmaker new
-      --template=<name>` and `cmaker templates` both need to merge the two
-      sources (and clearly label which is which in `cmaker templates`
-      output).
-- [ ] Same idea for §17's package registry: a user-local registry overlay
-      (`~/.cmaker/registry.yaml`) merged with the built-in curated list,
-      so someone can `cmaker install` their own or their team's internal
-      libraries without waiting on a cmaker release to add them to the
-      built-in index.
-- [ ] Longer-term, more speculative: a community template/registry
-      "index" repo (separate from cmaker itself, like a Homebrew tap is
-      separate from Homebrew) that `cmaker` can pull from - real
-      infrastructure and moderation questions attached to this one, flagged
-      explicitly as the most aspirational/least-scoped item in this
-      section.
+- [x] **User-local templates**: `~/.cmaker/templates/<name>/` and
+      project-local `.cmaker/templates/<name>/` are now checked alongside
+      the embedded ones (`internal/templates/templates.go`), same
+      `meta.yaml` format as §4. `List()` merges all three sources by name
+      with project > user > built-in precedence (a disk template can
+      override a built-in name, including `default`); `LoadMeta()` follows
+      the same precedence. `WriteFiles` was changed from
+      `WriteFiles(name, destRoot)` to `WriteFiles(meta, destRoot)` so it
+      can copy from a real disk path instead of the embedded FS without
+      re-resolving precedence a second time. `cmaker templates` labels
+      every non-built-in result with its source, e.g. `[user
+      (~/.cmaker/templates)]` or `[project (.cmaker/templates)]`. Directory
+      resolution goes through package vars (`userTemplatesDir`,
+      `projectTemplatesDir`), not consts, so tests can point them at temp
+      dirs. 7 unit tests in `internal/templates/templates_test.go` cover
+      merging, precedence (including project-over-user-over-built-in),
+      malformed on-disk `meta.yaml` being skipped rather than erroring, and
+      `WriteFiles` from both disk and the embedded FS.
+- [x] **User-local registry overlay** for §17's package registry:
+      `~/.cmaker/registry.yaml`, same entry shape as the built-in
+      `entries.yaml`, merged in `internal/registry/registry.go`'s
+      `mergedEntries()` (a user entry overrides a built-in one of the same
+      name - e.g. pinning your own `fmt` tag). Unlike the built-in entries
+      (parsed once at init), the overlay is re-read on every call so an
+      edit to `~/.cmaker/registry.yaml` takes effect without needing
+      anything restarted. A missing or malformed overlay file is
+      best-effort-ignored, matching `internal/config.TryLoad`'s philosophy
+      - registry lookups shouldn't hard-fail over one bad line in an
+      optional personal file. `cmaker search` labels overlay entries
+      `[user (~/.cmaker/registry.yaml)]`. `userRegistryPath` is a package
+      var for the same test-injection reason as the template dirs. 5 unit
+      tests in `internal/registry/user_overlay_test.go`.
+  - **Verified end-to-end, live, both halves**: built a real binary,
+    pointed `HOME` at a scratch directory, and for templates: created a
+    user-local `my-http-template` with a real `meta.yaml`/`src/main.cpp`,
+    confirmed `cmaker templates` labeled it correctly alongside every
+    built-in, scaffolded a project with it, and `cmaker run` actually
+    compiled and ran it end to end (printed its custom message). Then
+    created a project-local `.cmaker/templates/default/` override and
+    confirmed it wins over both the user-local and built-in `default`
+    (labeled `[project (.cmaker/templates)]`), and that `cmaker new` from
+    that directory used the override's file content, not the built-in's.
+    For the registry: added a `~/.cmaker/registry.yaml` with a custom
+    entry and a pinned-tag override of the built-in `fmt` entry, confirmed
+    `cmaker search` labeled both correctly, then ran a real `cmaker
+    install fmt` from a scaffolded project - it fetched and CMake-configured
+    the overlay's pinned tag (`10.2.1` instead of the built-in's default),
+    and `cmaker.yaml` recorded the overridden tag correctly. (The
+    subsequent `cmaker run` hit an unrelated fmt 10.2.1/compiler
+    incompatibility at actual compile time - not a cmaker bug, and not
+    something this feature is responsible for; the fetch/configure/
+    tag-override path itself, which is what §23 is about, worked
+    correctly.) No real bugs were found in this chunk - both rewrites
+    passed their tests and worked correctly on the first live run.
+- [ ] Longer-term, more speculative and explicitly out of scope for this
+      pass: a community template/registry "index" repo (separate from
+      cmaker itself, like a Homebrew tap is separate from Homebrew) that
+      `cmaker` can pull from - real infrastructure and moderation
+      questions attached to this one, left for a future chunk.
 
 ## 24. AI-assisted autoheal — ✅ v1 DONE (2026-08-06)
 

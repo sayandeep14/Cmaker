@@ -1,14 +1,19 @@
-// Package registry implements cmaker's built-in package registry (§17): a
-// small, curated index of well-behaved CPM/CMake-friendly libraries (see
-// entries.yaml), plus the lockfile logic (cmaker.lock) that pins the exact
-// commit CPM resolved for each dependency. It has no CLI concerns - that
-// wrapping lives in package cmd, mirroring internal/config/internal/cmake's
-// split.
+// Package registry implements cmaker's package registry (§17): a small,
+// curated index of well-behaved CPM/CMake-friendly libraries built into the
+// binary (see entries.yaml), merged with an optional user-local overlay
+// (~/.cmaker/registry.yaml, §23) so someone can `cmaker install` their own
+// or their team's internal libraries without waiting on a cmaker release to
+// add them to the built-in index. Also home to the lockfile logic
+// (cmaker.lock) that pins the exact commit CPM resolved for each
+// dependency. It has no CLI concerns - that wrapping lives in package cmd,
+// mirroring internal/config/internal/cmake's split.
 package registry
 
 import (
 	_ "embed"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -20,6 +25,15 @@ import (
 //go:embed entries.yaml
 var entriesYAML []byte
 
+// Source records where an Entry was discovered from - purely informational
+// (surfaced by `cmaker search`), not part of registry.yaml itself.
+type Source string
+
+const (
+	SourceBuiltIn Source = "built-in"
+	SourceUser    Source = "user (~/.cmaker/registry.yaml)"
+)
+
 // Entry describes one registry-listed library.
 type Entry struct {
 	Name       string   `yaml:"name"`
@@ -28,29 +42,89 @@ type Entry struct {
 	Link       []string `yaml:"link"`
 	Options    []string `yaml:"options,omitempty"`
 	Notes      string   `yaml:"notes"`
+
+	Source Source `yaml:"-"` // set by the loader, never read from registry.yaml itself
 }
 
-// entries is parsed once at package init - the registry is a fixed,
-// embedded list, not something loaded per call.
-var entries = mustParseEntries()
+// builtInEntries is parsed once at package init - the embedded content
+// never changes at runtime, unlike the user overlay.
+var builtInEntries = mustParseBuiltInEntries()
 
-func mustParseEntries() []Entry {
+func mustParseBuiltInEntries() []Entry {
 	var e []Entry
 	if err := yaml.Unmarshal(entriesYAML, &e); err != nil {
 		panic(fmt.Sprintf("internal/registry: malformed entries.yaml: %v", err))
 	}
-	sort.Slice(e, func(i, j int) bool { return e[i].Name < e[j].Name })
+	for i := range e {
+		e[i].Source = SourceBuiltIn
+	}
 	return e
 }
 
-// List returns every registry entry, sorted by name.
-func List() []Entry {
+// userRegistryPath is a package var (not a const) so tests can point it at
+// a temp file instead of a real $HOME/.cmaker/registry.yaml.
+var userRegistryPath = func() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".cmaker", "registry.yaml")
+}
+
+// loadUserEntries reads the user-local registry overlay, if present. A
+// missing file (the common case - most users have no overlay at all) or a
+// malformed one is not an error: registry lookups shouldn't hard-fail
+// because of one bad entry in an optional personal file, so this is
+// deliberately best-effort, mirroring internal/config.TryLoad's philosophy.
+func loadUserEntries() []Entry {
+	path := userRegistryPath()
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var entries []Entry
+	if err := yaml.Unmarshal(data, &entries); err != nil {
+		return nil
+	}
+	for i := range entries {
+		entries[i].Source = SourceUser
+	}
 	return entries
+}
+
+// mergedEntries re-reads the user overlay on every call (cheap for the
+// tiny sizes involved here) rather than caching it once, so a change to
+// ~/.cmaker/registry.yaml is picked up without needing anything to be
+// re-initialized - a user entry overrides a built-in one with the same
+// name.
+func mergedEntries() []Entry {
+	byName := make(map[string]Entry, len(builtInEntries))
+	for _, e := range builtInEntries {
+		byName[e.Name] = e
+	}
+	for _, e := range loadUserEntries() {
+		byName[e.Name] = e
+	}
+	merged := make([]Entry, 0, len(byName))
+	for _, e := range byName {
+		merged = append(merged, e)
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Name < merged[j].Name })
+	return merged
+}
+
+// List returns every registry entry (built-in + user overlay), sorted by
+// name.
+func List() []Entry {
+	return mergedEntries()
 }
 
 // Find looks up name (case-insensitive, exact match).
 func Find(name string) (Entry, bool) {
-	for _, e := range entries {
+	for _, e := range mergedEntries() {
 		if strings.EqualFold(e.Name, name) {
 			return e, true
 		}
@@ -63,7 +137,7 @@ func Find(name string) (Entry, bool) {
 func Search(term string) []Entry {
 	term = strings.ToLower(term)
 	var matches []Entry
-	for _, e := range entries {
+	for _, e := range mergedEntries() {
 		if strings.Contains(strings.ToLower(e.Name), term) || strings.Contains(strings.ToLower(e.Notes), term) {
 			matches = append(matches, e)
 		}
@@ -77,7 +151,7 @@ func Search(term string) []Entry {
 func CloseMatches(name string) []string {
 	lower := strings.ToLower(name)
 	var matches []string
-	for _, e := range entries {
+	for _, e := range mergedEntries() {
 		entryLower := strings.ToLower(e.Name)
 		if strings.Contains(entryLower, lower) || strings.Contains(lower, entryLower) || levenshtein(lower, entryLower) <= 2 {
 			matches = append(matches, e.Name)

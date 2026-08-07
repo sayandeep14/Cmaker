@@ -211,7 +211,11 @@ func runSearch(term string) error {
 		return nil
 	}
 	for _, e := range matches {
-		fmt.Printf("%s - %s (%s)\n", e.Name, e.Notes, e.Repo)
+		source := ""
+		if e.Source != registry.SourceBuiltIn {
+			source = fmt.Sprintf(" [%s]", e.Source)
+		}
+		fmt.Printf("%s%s - %s (%s)\n", e.Name, colorize(ansiYellow, source), e.Notes, e.Repo)
 	}
 	return nil
 }

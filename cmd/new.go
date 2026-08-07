@@ -228,7 +228,7 @@ func scaffoldProject(root string, name string, templateName string, language str
 			if err := writeLibrarySources(root, libName); err != nil {
 				return fmt.Errorf("failed to write library sources: %w", err)
 			}
-		} else if err := tmpl.WriteFiles(meta.Name, root); err != nil {
+		} else if err := tmpl.WriteFiles(meta, root); err != nil {
 			return fmt.Errorf("failed to write template files: %w", err)
 		}
 	}

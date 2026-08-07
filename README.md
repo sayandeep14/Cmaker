@@ -31,6 +31,7 @@ Hello from Cmaker!
 - [Dependencies (fetched automatically via CPM)](#dependencies-fetched-automatically-via-cpm)
 - [Package install (a real dependency manager UX)](#package-install-a-real-dependency-manager-ux)
   - [Supply-chain auditing (`cmaker audit`)](#supply-chain-auditing-cmaker-audit)
+- [Extensibility: your own templates and registry entries](#extensibility-your-own-templates-and-registry-entries)
 - [Compiler selection](#compiler-selection)
 - [Build speed: parallelism and compiler caching](#build-speed-parallelism-and-compiler-caching)
 - [Formatting and linting (`cmaker fmt` / `cmaker lint`)](#formatting-and-linting-cmaker-fmt--cmaker-lint)
@@ -344,6 +345,78 @@ fmt (fmtlib/fmt@40626af8) - license: MIT
 License lookups are also available from `cmaker list --licenses` (a
 network call per dependency, so it's opt-in — plain `cmaker list` stays
 instant and offline).
+
+---
+
+## Extensibility: your own templates and registry entries
+
+The built-in templates and package registry are deliberately small and
+curated. For your own or your team's internal libraries and starter
+projects, you don't need to wait on a cmaker release or fork the repo —
+drop files in one of two well-known locations and cmaker picks them up
+automatically:
+
+| Location | Scope | Applies to |
+|---|---|---|
+| `~/.cmaker/templates/<name>/` | Every project on your machine | `cmaker new --template=<name>` |
+| `.cmaker/templates/<name>/` (relative to cwd) | Just this project/repo | `cmaker new --template=<name>` |
+| `~/.cmaker/registry.yaml` | Every project on your machine | `cmaker install <name>` / `cmaker search` |
+
+**Custom templates** use the exact same shape as a built-in template: a
+`meta.yaml` plus whatever source files you want copied into the scaffolded
+project.
+
+```yaml
+# ~/.cmaker/templates/my-http-template/meta.yaml
+name: my-http-template
+description: Our team's internal HTTP service starter
+cpp_version: 20
+# dependencies:, link_libraries:, cmake_extra: all work the same as a
+# built-in template's meta.yaml
+```
+
+```
+~/.cmaker/templates/my-http-template/
+├── meta.yaml
+└── src/
+    └── main.cpp
+```
+
+```bash
+cmaker templates                              # lists it alongside the built-ins, labeled [user (~/.cmaker/templates)]
+cmaker new myservice --template=my-http-template
+```
+
+**Custom registry entries** use the same shape as an entry in cmaker's
+built-in `entries.yaml`:
+
+```yaml
+# ~/.cmaker/registry.yaml
+- name: my-internal-lib
+  repo: myorg/my-internal-lib
+  default_tag: v1.0.0
+  link: [my-internal-lib::my-internal-lib]
+  notes: our team's internal library
+```
+
+```bash
+cmaker search internal   # finds it, labeled [user (~/.cmaker/registry.yaml)]
+cmaker install my-internal-lib
+```
+
+**Precedence** (most to least specific): project-local template
+(`.cmaker/templates/`) > user-local template (`~/.cmaker/templates/`) >
+built-in. A name that collides with a built-in — including `default` —
+overrides it entirely rather than erroring, which is also how you'd pin a
+different version of a library the built-in registry already knows about
+(e.g. a `fmt` entry in `~/.cmaker/registry.yaml` overrides the built-in
+`fmt` entry's tag). A missing or malformed `~/.cmaker/registry.yaml`, or a
+`meta.yaml` that fails to parse, is silently skipped rather than treated as
+an error — it's an optional personal/team overlay, not a required file.
+
+`cmaker templates` and `cmaker search` label every non-built-in result
+with where it came from, so it's always clear whether you're looking at
+cmaker's own curated list or your own overlay.
 
 ---
 
@@ -994,7 +1067,10 @@ Builds API documentation with Doxygen (see
 <details>
 <summary><code>cmaker templates</code></summary>
 
-Lists every available template with its description and what it fetches.
+Lists every available template with its description and what it fetches —
+built-in plus any user-local (`~/.cmaker/templates/`) or project-local
+(`.cmaker/templates/`) templates, labeled by source (see
+[Extensibility](#extensibility-your-own-templates-and-registry-entries)).
 </details>
 
 <details>
@@ -1045,7 +1121,9 @@ Lists every dependency currently declared in `cmaker.yaml`.
 <details>
 <summary><code>cmaker search &lt;term&gt;</code></summary>
 
-Searches the built-in package registry by name or description.
+Searches the package registry by name or description — built-in plus any
+user-local overlay (`~/.cmaker/registry.yaml`), labeled by source (see
+[Extensibility](#extensibility-your-own-templates-and-registry-entries)).
 </details>
 
 <details>

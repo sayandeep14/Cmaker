@@ -29,7 +29,11 @@ var templatesCmd = &cobra.Command{
 				}
 				deps += ")"
 			}
-			fmt.Printf("  %s\n      %s%s\n", colorize(ansiCyan, m.Name), m.Description, deps)
+			source := ""
+			if m.Source != tmpl.SourceBuiltIn {
+				source = fmt.Sprintf(" [%s]", m.Source)
+			}
+			fmt.Printf("  %s%s\n      %s%s\n", colorize(ansiCyan, m.Name), colorize(ansiYellow, source), m.Description, deps)
 		}
 		return nil
 	},
