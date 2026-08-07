@@ -33,7 +33,7 @@ func runCoverage() error {
 		return fmt.Errorf("gcovr not found on PATH (see 'cmaker doctor') - needed to produce the HTML report")
 	}
 
-	if err := runBuild(false, "", 0); err != nil {
+	if err := runBuild(false, "", 0, ""); err != nil {
 		return err
 	}
 

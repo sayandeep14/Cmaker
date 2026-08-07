@@ -14,25 +14,33 @@ var testCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		release, _ := cmd.Flags().GetBool("release")
-		return runTest(release)
+		member, _ := cmd.Flags().GetString("member")
+		return runTest(release, member)
 	},
 }
 
 func init() {
 	testCmd.Flags().Bool("release", false, "build with CMAKE_BUILD_TYPE=Release (-O3) before testing")
+	testCmd.Flags().String("member", "", "workspace root only: scope ctest to just this member's build subdirectory (see cmaker.yaml's 'workspace.members')")
 }
 
 // runTest builds the project (see runBuild) and then runs its ctest suite,
 // requiring 'testing.enabled: true' in cmaker.yaml (see config.TestingConfig)
 // rather than letting an unconfigured project hit ctest's cryptic
 // "No tests were found!!!" failure.
-func runTest(release bool) error {
+func runTest(release bool, member string) error {
 	cfg := loadConfigOrExit()
+	if cfg.Workspace != nil {
+		return runWorkspaceTest(cfg, release, member)
+	}
+	if member != "" {
+		return fmt.Errorf("--member is only valid for a workspace root cmaker.yaml (see 'workspace:' in cmaker.yaml)")
+	}
 	if cfg.Testing == nil || !cfg.Testing.Enabled {
 		return fmt.Errorf("no tests configured - set 'testing: { enabled: true }' in cmaker.yaml (the catch2 template does this for you)")
 	}
 
-	if err := runBuild(release, "", 0); err != nil {
+	if err := runBuild(release, "", 0, ""); err != nil {
 		return err
 	}
 

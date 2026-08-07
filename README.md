@@ -38,6 +38,7 @@ Hello from Cmaker!
 - [Coverage, benchmarks, docs, and Docker](#coverage-benchmarks-docs-and-docker)
 - [Sanitizers and warnings-as-errors](#sanitizers-and-warnings-as-errors)
 - [Testing (`ctest`)](#testing-ctest)
+- [Workspaces (monorepo support)](#workspaces-monorepo-support)
 - [Rust and Zig interop](#rust-and-zig-interop)
 - [Ad hoc single-file compiles (`--only`)](#ad-hoc-single-file-compiles---only)
 - [Named configs (your own shortcuts)](#named-configs-your-own-shortcuts)
@@ -605,6 +606,72 @@ covers the single-executable case cmaker supports today — dedicated test
 targets separate from the main executable (multi-target projects) are
 tracked in `ROADMAP.md` §16.
 
+Known gap: `testing: { enabled: true }` assumes the target itself is
+runnable, so it only works for `target_type: executable` (the default).
+Setting it on a `static_library`/`shared_library` member generates an
+`add_test()` that ctest can't actually run (a library isn't an
+executable) — use an executable elsewhere in the project (or workspace
+member, see below) as the test binary instead, the same pattern the
+`catch2` template already uses.
+
+---
+
+## Workspaces (monorepo support)
+
+A workspace root `cmaker.yaml` groups several ordinary cmaker projects —
+typically an app plus one or more internal libraries (§16's
+`target_type: static_library`/`shared_library`) — into one repo, built and
+versioned together:
+
+```yaml
+# cmaker.yaml (workspace root - no 'executable:'/'target_type:' of its own)
+project_name: myworkspace
+workspace:
+  members:
+    - libs/core   # a static_library target
+    - app         # an executable that links against 'core'
+```
+
+Each member directory (`libs/core/`, `app/`) is a completely normal
+cmaker project with its own `cmaker.yaml` — scaffold each with a plain
+`cmaker new libs/core --template=default` (then set `target_type:
+static_library`) and `cmaker new app`, same as any standalone project. A
+member that depends on a sibling member just names that sibling's target
+in its own `libraries:`:
+
+```yaml
+# app/cmaker.yaml
+project_name: app
+executable: myapp
+libraries:
+  - core   # resolved via CMake's own add_subdirectory, not a second CPM fetch
+```
+
+**Member order matters**: CMake requires a target to already exist by the
+time `target_link_libraries` references it, so a library member must be
+listed in `workspace.members` before any member that links against it.
+
+From the workspace root:
+
+```bash
+cmaker build                  # regenerates every member's CMakeLists.txt + the
+                               # root's, then configures and builds the whole
+                               # tree as a single ./build
+cmaker build --member=app     # build (or rebuild) just one member's target
+cmaker run --member=app       # build (if needed) and run one member's executable
+                               # ('run' has no default member - it's required)
+cmaker test                   # ctest across every member with testing.enabled
+cmaker test --member=app      # ctest scoped to just one member's build subdir
+```
+
+A built executable lands at `build/<member>/<executable>` (CMake mirrors
+the source tree under `build/`), e.g. `build/app/myapp` above. Compiler
+and ccache/sccache settings (`compiler:`, `disable_ccache:`) apply
+workspace-wide from the root `cmaker.yaml` only — CMake locks in one
+compiler per configure, so individual members can't each override it in
+workspace mode. `cmaker clean` works unchanged (it just removes the whole
+`build/` directory).
+
 ---
 
 ## Rust and Zig interop
@@ -972,6 +1039,7 @@ with a clear error instead of silently picking one.
 - `--compiler string` — override the compiler for this build only
 - `--only string` — compile a single source file ad hoc (see [above](#ad-hoc-single-file-compiles---only))
 - `--jobs int` / `-j` — parallel build jobs (default: number of CPUs, see [above](#build-speed-parallelism-and-compiler-caching))
+- `--member string` — workspace root only: build just this member instead of the whole workspace (see [above](#workspaces-monorepo-support))
 </details>
 
 <details>
@@ -986,6 +1054,7 @@ isn't one.
 - `--only string` — compile and run a single source file ad hoc
 - `--compiler string` — compiler to use for `--only`
 - `--runner string` — custom compile-and-run tool to invoke instead (e.g. `crun`), overriding `cmaker.yaml`'s `runner` — applies to `--only` and to a whole-project `run` (see [above](#using-a-custom-compile-and-run-tool-eg-crun))
+- `--member string` — workspace root only: which member to run - required in workspace mode, there's no default (see [above](#workspaces-monorepo-support))
 </details>
 
 <details>
@@ -994,7 +1063,10 @@ isn't one.
 Builds (if needed), then runs `ctest --output-on-failure`. Requires
 `testing.enabled: true` in `cmaker.yaml` (see [above](#testing-ctest));
 fails fast with a clear error otherwise instead of `ctest`'s own
-"No tests were found!!!".
+"No tests were found!!!". In workspace mode, requires at least one
+member to have `testing.enabled: true`.
+
+- `--member string` — workspace root only: scope ctest to just this member's build subdirectory (see [above](#workspaces-monorepo-support))
 
 - `--release` — build with `CMAKE_BUILD_TYPE=Release` (`-O3`) before testing
 </details>

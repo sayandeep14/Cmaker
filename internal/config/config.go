@@ -44,6 +44,22 @@ type Config struct {
 	DisableCcache    bool              `yaml:"disable_ccache,omitempty"` // opt out of the automatic ccache/sccache CMAKE_<LANG>_COMPILER_LAUNCHER wiring (on by default when either is found on PATH)
 	LogsKeep         int               `yaml:"logs_keep,omitempty"`      // how many .cmaker/logs/ build/run logs to retain before pruning (default 5, see internal/logs.DefaultKeep)
 	Coverage         bool              `yaml:"coverage,omitempty"`       // opt-in --coverage instrumentation (gcov-compatible, works with gcc and clang alike), consumed by 'cmaker coverage'
+	Workspace        *WorkspaceConfig  `yaml:"workspace,omitempty"`      // opt-in workspace/monorepo root (§21) - a workspace root cmaker.yaml declares no target of its own, only member project directories
+}
+
+// WorkspaceConfig turns a cmaker.yaml into a workspace root: it declares no
+// target of its own (no Executable/TargetType), only a list of member
+// project directories, each with its own ordinary cmaker.yaml. Members are
+// wired together via CMake's own add_subdirectory, not a second CPM-style
+// fetch of something already sitting in the repo - so a member that depends
+// on a sibling library member just lists that sibling's target name in its
+// own 'libraries:', the same way it would link any other CMake target.
+//
+// Member order matters: CMake requires a target to already exist by the
+// time target_link_libraries references it, so a library member must be
+// listed before any member that links against it.
+type WorkspaceConfig struct {
+	Members []string `yaml:"members"`
 }
 
 // RustConfig describes an optional Rust crate compiled via cargo and linked
@@ -136,6 +152,15 @@ func TargetTypeOrDefault(targetType string) string {
 func Validate(c Config) error {
 	if c.SchemaVersion > CurrentSchemaVersion {
 		return fmt.Errorf("cmaker.yaml has schema_version %d, but this build of cmaker only understands up to %d - please upgrade cmaker", c.SchemaVersion, CurrentSchemaVersion)
+	}
+	if c.Workspace != nil {
+		if c.Executable != "" {
+			return fmt.Errorf("a workspace root cmaker.yaml must not also set 'executable' - a workspace root defines no target of its own, only 'workspace.members'")
+		}
+		if len(c.Workspace.Members) == 0 {
+			return fmt.Errorf("'workspace.members' must not be empty")
+		}
+		return nil
 	}
 	if c.Executable == "" {
 		return fmt.Errorf("'executable' must not be empty")

@@ -65,11 +65,11 @@ func runWatch() error {
 
 func triggerRebuild() {
 	infof("Change detected. Rebuilding...")
-	if err := runBuild(false, "", 0); err != nil {
+	if err := runBuild(false, "", 0, ""); err != nil {
 		errorf("%v", err)
 		return
 	}
-	if err := runProject("", nil); err != nil {
+	if err := runProject("", "", nil); err != nil {
 		errorf("%v", err)
 	}
 }

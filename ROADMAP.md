@@ -1299,7 +1299,7 @@ default.
       freely reorderable, good candidates to interleave with the bigger
       items above if you want quick wins between them.
 
-## 21. Workspaces / monorepo support
+## 21. Workspaces / monorepo support — ✅ DONE (2026-08-07)
 
 Motivation: once §16 makes "a project can be a library" real, the natural
 next question is "a repo with several cmaker projects that depend on each
@@ -1308,19 +1308,79 @@ and versioned together. This is the multi-project generalization of §3's
 original "multiple executables" ask, once §16 has made a single project
 capable of being more than one kind of target.
 
-- [ ] `cmaker.yaml` **workspace mode**: a top-level `workspace: { members:
-      [app, libs/core, libs/net] }` config (in a root `cmaker.yaml` with no
-      `executable:`/`target_type:` of its own) listing member project
-      directories, each with its own normal `cmaker.yaml`.
-- [ ] `cmaker build`/`cmaker run`/`cmaker test` at the workspace root
-      operate across all members (or a `--only=<member>` subset), resolving
-      inter-member dependencies (an app member depending on a sibling
-      library member) via CMake's own `add_subdirectory`, not a second
-      CPM-style fetch of something that's already sitting right there in
-      the repo.
-- [ ] Depends on §16 (library targets) existing first - a workspace of
-      only-executables is a much smaller, less interesting version of this
-      problem.
+- [x] `cmaker.yaml` **workspace mode**: a top-level `workspace: { members:
+      [app, libs/core] }` config (`config.WorkspaceConfig`, in a root
+      `cmaker.yaml` with no `executable:`/`target_type:` of its own -
+      `Validate` now rejects a root that sets both) listing member project
+      directories, each with its own normal, independent `cmaker.yaml`.
+      `internal/cmake.Generate` branches to a new `generateWorkspace` for a
+      `Workspace != nil` config: just `project()` + one `add_subdirectory`
+      per member (in `workspace.members` order) + an unconditional
+      `enable_testing()` (so `ctest` from the root always has a
+      `CTestTestfile.cmake` to aggregate every member's own tests into,
+      regardless of whether any given member opts into testing) + the
+      root's own `cmake_extra`, if any - no target of its own.
+- [x] `cmaker build`/`cmaker run`/`cmaker test` at the workspace root
+      (new `cmd/workspace.go`) operate across all members, or a
+      `--member=<path>` subset (matching the flag name to the config key,
+      `workspace.members`, rather than the roadmap's original
+      `--only=<member>` wording - `--only` was already taken by both
+      commands for their existing "compile one file ad hoc" meaning, so
+      reusing it for something unrelated would've been a footgun, not a
+      convenience). All three regenerate every member's `CMakeLists.txt`
+      from its own `cmaker.yaml`, then the workspace root's own, before a
+      single `cmake -S . -B build` configure + build across the whole tree
+      - inter-member dependencies (an app member depending on a sibling
+      library member) resolve via CMake's own `add_subdirectory` (the
+      dependent just names the sibling's target in its own `libraries:`),
+      not a second CPM-style fetch of something already sitting in the
+      repo, exactly as scoped. `cmaker run` requires `--member` explicitly
+      (no default binary to run in a workspace); `cmaker build --member`
+      builds just that target (`cmake --build --target <name>`) while
+      still configuring the whole tree (CMake has no per-subdirectory
+      configure); `cmaker test --member` scopes `ctest --test-dir` to
+      that member's build subdirectory. A workspace's compiler/ccache
+      settings come only from the root `cmaker.yaml`, not individual
+      members - CMake locks in one compiler per configure, so this is a
+      real, documented limitation, not an oversight. `cmaker clean` needed
+      no changes (it already just removes the whole `build/` directory).
+- [x] Depends on §16 (library targets), exactly as scoped - verified with a
+      real `static_library` member linked into a real executable member.
+- Unit tests: `internal/config/config_test.go` (workspace root validation:
+  valid, empty members, executable+workspace conflict);
+  `internal/cmake/generate_test.go` (`TestGenerateWorkspaceRoot`,
+  `TestGenerateWorkspaceRootCMakeExtra` - member order preserved, no
+  target of its own, `enable_testing()` present).
+- **Verified end-to-end, live, with a real two-member monorepo** (not
+  mocked): hand-built a workspace with `libs/core` (a real
+  `target_type: static_library` exporting `core::add`) and `app` (an
+  executable linking `libraries: [core]` and calling it). `cmaker build`
+  from the root regenerated both members' `CMakeLists.txt` plus the root's
+  `add_subdirectory` list, configured once, and actually compiled+linked
+  both targets in dependency order. `cmaker run --member=app` built and
+  ran the real binary, printing the library-computed `3 + 4 = 7` - genuine
+  proof the add_subdirectory/target_link_libraries wiring works, not just
+  that CMake accepted the generated file. Verified the error paths too:
+  `cmaker run` with no `--member` and with a bogus `--member` both produced
+  the intended clear errors listing the real member names; `cmaker build
+  --member=libs/core` correctly built only that target;
+  `cmaker test`/`--member=app` correctly ran ctest scoped to one member's
+  build subdirectory, aggregated via the root's `enable_testing()`; and
+  `cmaker clean` + a full rebuild from scratch worked unchanged.
+- **Real, pre-existing bug found during verification (not a workspace
+  bug)**: setting `testing.enabled: true` on a `static_library`/
+  `shared_library` target (§16) generates `add_test(NAME <lib>
+  COMMAND <lib>)`, but the library build artifact isn't an executable
+  ctest can invoke - `ctest` reports "Unable to find executable" and the
+  test fails to even run. This isn't something workspaces introduced (a
+  single, non-workspace library project with `testing.enabled: true` hits
+  the exact same thing); it just hadn't been exercised before, since
+  nothing had previously combined §16's library targets with the
+  `testing.enabled` opt-in in one project. Documented as a known gap in `README.md`'s
+  Testing section rather than silently left for someone to rediscover;
+  fixing library-target testing (e.g. wiring in a real test framework
+  binary alongside the library, the way `catch2` does for executables) is
+  its own scoped follow-up, not part of this chunk.
 
 ## 22. Supply-chain / dependency auditing — ✅ DONE (2026-08-05)
 

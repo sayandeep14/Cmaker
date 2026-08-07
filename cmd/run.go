@@ -22,10 +22,11 @@ var runCmd = &cobra.Command{
 		only, _ := cmd.Flags().GetString("only")
 		compiler, _ := cmd.Flags().GetString("compiler")
 		runner, _ := cmd.Flags().GetString("runner")
+		member, _ := cmd.Flags().GetString("member")
 		if only != "" {
 			return runOnlyFile(only, compiler, runner, args)
 		}
-		return runProject(runner, args)
+		return runProject(runner, member, args)
 	},
 }
 
@@ -33,6 +34,7 @@ func init() {
 	runCmd.Flags().String("only", "", "compile and run a single source file ad hoc, without wiring it into the main executable")
 	runCmd.Flags().String("compiler", "", "compiler to use for --only, overriding cmaker.yaml's 'compiler'")
 	runCmd.Flags().String("runner", "", "custom program to invoke as '<runner> <file>' instead of compiling then running (e.g. crun), overriding cmaker.yaml's 'runner' - applies to --only and to a whole project's 'cmaker run'")
+	runCmd.Flags().String("member", "", "workspace root only: which member to run (required in workspace mode, see cmaker.yaml's 'workspace.members')")
 }
 
 // runOnlyFile runs a single source file ad hoc. If a runner is configured
@@ -121,7 +123,15 @@ func quoteAll(args []string) []string {
 	return quoted
 }
 
-func runProject(runnerOverride string, args []string) error {
+func runProject(runnerOverride string, member string, args []string) error {
+	peek := loadConfigOrExit()
+	if peek.Workspace != nil {
+		return runWorkspaceRun(peek, member, runnerOverride, args)
+	}
+	if member != "" {
+		return fmt.Errorf("--member is only valid for a workspace root cmaker.yaml (see 'workspace:' in cmaker.yaml)")
+	}
+
 	cfg := syncConfig()
 	targetType := config.TargetTypeOrDefault(cfg.TargetType)
 
@@ -147,7 +157,7 @@ func runProject(runnerOverride string, args []string) error {
 
 	if isBuildRequired(exePath) {
 		infof("Changes detected. Rebuilding...")
-		if err := runBuild(false, "", 0); err != nil {
+		if err := runBuild(false, "", 0, ""); err != nil {
 			return err
 		}
 	}

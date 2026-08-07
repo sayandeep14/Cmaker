@@ -21,6 +21,9 @@ func TestValidate(t *testing.T) {
 		{"valid static_library target type", Config{Executable: "mylib", CppVersion: 17, TargetType: "static_library"}, false},
 		{"valid shared_library target type", Config{Executable: "mylib", CppVersion: 17, TargetType: "shared_library"}, false},
 		{"unknown target type", Config{Executable: "mylib", CppVersion: 17, TargetType: "header_only"}, true},
+		{"valid workspace root", Config{ProjectName: "ws", Workspace: &WorkspaceConfig{Members: []string{"app", "libs/core"}}}, false},
+		{"workspace root with empty members", Config{ProjectName: "ws", Workspace: &WorkspaceConfig{Members: nil}}, true},
+		{"workspace root also setting executable", Config{ProjectName: "ws", Executable: "main", Workspace: &WorkspaceConfig{Members: []string{"app"}}}, true},
 	}
 
 	for _, tt := range tests {

@@ -25,10 +25,11 @@ var buildCmd = &cobra.Command{
 		compiler, _ := cmd.Flags().GetString("compiler")
 		only, _ := cmd.Flags().GetString("only")
 		jobs, _ := cmd.Flags().GetInt("jobs")
+		member, _ := cmd.Flags().GetString("member")
 		if only != "" {
 			return runBuildOnly(only, compiler)
 		}
-		return runBuild(release, compiler, jobs)
+		return runBuild(release, compiler, jobs, member)
 	},
 }
 
@@ -37,6 +38,7 @@ func init() {
 	buildCmd.Flags().String("compiler", "", "override the compiler for this build only (e.g. clang++-17), takes precedence over cmaker.yaml's 'compiler'")
 	buildCmd.Flags().String("only", "", "compile a single source file ad hoc (scratch experiments), without wiring it into the main executable")
 	buildCmd.Flags().IntP("jobs", "j", 0, "parallel build jobs to pass to 'cmake --build -j' (default: number of CPUs)")
+	buildCmd.Flags().String("member", "", "workspace root only: build just this member instead of the whole workspace (see cmaker.yaml's 'workspace.members')")
 }
 
 // runBuildOnly compiles a single source file ad hoc via compileOnly,
@@ -54,8 +56,18 @@ func runBuildOnly(file string, compilerOverride string) error {
 	return nil
 }
 
-func runBuild(release bool, compilerOverride string, jobs int) (err error) {
-	cfg := syncConfig()
+func runBuild(release bool, compilerOverride string, jobs int, member string) (err error) {
+	cfg := loadConfigOrExit()
+	if cfg.Workspace != nil {
+		return runWorkspaceBuild(cfg, release, jobs, member)
+	}
+	if member != "" {
+		return fmt.Errorf("--member is only valid for a workspace root cmaker.yaml (see 'workspace:' in cmaker.yaml)")
+	}
+	if err := cmake.Generate(".", cfg); err != nil {
+		errorf("failed to write CMakeLists.txt: %v", err)
+		os.Exit(1)
+	}
 
 	// Captures the whole build's combined output (configure + build steps)
 	// into one rotating .cmaker/logs/ entry (§24) - the foundation

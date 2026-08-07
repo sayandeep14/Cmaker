@@ -28,7 +28,7 @@ func runBench() error {
 		return fmt.Errorf("no bench/*.cpp files found - see 'cmaker new --with-benchmarks' (or add them and 'cmaker install benchmark' yourself)")
 	}
 
-	if err := runBuild(true, "", 0); err != nil {
+	if err := runBuild(true, "", 0, ""); err != nil {
 		return err
 	}
 

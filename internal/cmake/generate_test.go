@@ -496,3 +496,42 @@ func mustGenerateInDir(t *testing.T, dir string, c config.Config) string {
 	}
 	return string(data)
 }
+
+func TestGenerateWorkspaceRoot(t *testing.T) {
+	content := mustGenerate(t, config.Config{
+		ProjectName: "myworkspace",
+		Workspace:   &config.WorkspaceConfig{Members: []string{"libs/core", "app"}},
+	})
+
+	if !strings.Contains(content, "project(myworkspace)") {
+		t.Error("expected project(myworkspace)")
+	}
+	if !strings.Contains(content, "enable_testing()") {
+		t.Error("expected an unconditional enable_testing() so ctest can aggregate member tests")
+	}
+	if !strings.Contains(content, "add_subdirectory(libs/core)") {
+		t.Error("expected add_subdirectory(libs/core)")
+	}
+	if !strings.Contains(content, "add_subdirectory(app)") {
+		t.Error("expected add_subdirectory(app)")
+	}
+	// Member order must be preserved (libraries before their dependents).
+	if strings.Index(content, "add_subdirectory(libs/core)") > strings.Index(content, "add_subdirectory(app)") {
+		t.Error("expected add_subdirectory(libs/core) to appear before add_subdirectory(app), preserving workspace.members order")
+	}
+	// A workspace root has no target of its own.
+	if strings.Contains(content, "add_executable") || strings.Contains(content, "add_library") {
+		t.Error("workspace root CMakeLists.txt should declare no target of its own")
+	}
+}
+
+func TestGenerateWorkspaceRootCMakeExtra(t *testing.T) {
+	content := mustGenerate(t, config.Config{
+		ProjectName: "myworkspace",
+		Workspace:   &config.WorkspaceConfig{Members: []string{"app"}},
+		CMakeExtra:  "set(SOME_SHARED_VAR ON)",
+	})
+	if !strings.Contains(content, "set(SOME_SHARED_VAR ON)") {
+		t.Error("expected cmake_extra to be appended to the workspace root CMakeLists.txt")
+	}
+}

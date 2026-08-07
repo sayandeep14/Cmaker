@@ -225,7 +225,7 @@ func TestIntegrationBuildLogCapture(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "src", "main.cpp"), []byte(brokenSrc), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := runBuild(false, "", 0); err == nil {
+	if err := runBuild(false, "", 0, ""); err == nil {
 		t.Fatal("expected runBuild() to fail on genuinely broken source")
 	}
 
@@ -245,7 +245,7 @@ func TestIntegrationBuildLogCapture(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "src", "main.cpp"), []byte(fixedSrc), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := runBuild(false, "", 0); err != nil {
+	if err := runBuild(false, "", 0, ""); err != nil {
 		t.Fatalf("runBuild() on fixed source failed: %v", err)
 	}
 

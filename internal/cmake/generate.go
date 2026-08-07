@@ -79,6 +79,10 @@ include(${CPM_DOWNLOAD_LOCATION})
 
 // Generate writes CMakeLists.txt into root, derived from c.
 func Generate(root string, c config.Config) error {
+	if c.Workspace != nil {
+		return generateWorkspace(root, c)
+	}
+
 	lang := config.LanguageOrDefault(c.Language)
 	targetType := config.TargetTypeOrDefault(c.TargetType)
 
@@ -312,6 +316,34 @@ project(%s)
 	content += demoBuilder.String() + benchBuilder.String() + installBuilder.String()
 
 	return os.WriteFile(filepath.Join(root, "CMakeLists.txt"), []byte(content), 0644)
+}
+
+// generateWorkspace writes a workspace root's CMakeLists.txt (§21): just a
+// project() plus one add_subdirectory per member, no target of its own. Each
+// member keeps its own independently generated CMakeLists.txt (a normal
+// project, unaware it's part of a workspace) - CMake's own add_subdirectory
+// is what wires a member depending on a sibling library member together, via
+// that sibling's target name in the dependent's own 'libraries:', not a
+// second CPM-style fetch of something already sitting in the repo.
+//
+// enable_testing() is emitted unconditionally (harmless if no member opts
+// into testing) so that a plain `ctest --test-dir build` run from the
+// workspace root always has a CTestTestfile.cmake to aggregate every
+// member's own add_test() calls into - CMake only generates that root-level
+// aggregation when enable_testing() was called somewhere in the directory
+// chain leading to the top-level project().
+func generateWorkspace(root string, c config.Config) error {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "cmake_minimum_required(VERSION 3.14)\nproject(%s)\n\nenable_testing()\n\n", c.ProjectName)
+	for _, m := range c.Workspace.Members {
+		fmt.Fprintf(&sb, "add_subdirectory(%s)\n", m)
+	}
+	if c.CMakeExtra != "" {
+		sb.WriteString("\n# --- custom cmake_extra from cmaker.yaml ---\n")
+		sb.WriteString(c.CMakeExtra)
+		sb.WriteString("\n")
+	}
+	return os.WriteFile(filepath.Join(root, "CMakeLists.txt"), []byte(sb.String()), 0644)
 }
 
 // CompilerArgs translates a cmaker.yaml `compiler` field (or a --compiler
