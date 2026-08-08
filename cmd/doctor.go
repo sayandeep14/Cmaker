@@ -2,12 +2,8 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"regexp"
 	"runtime"
-	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -104,7 +100,7 @@ func runDoctor() error {
 		missingRequired = true
 	}
 
-	if compilers := discoverCompilers(); len(compilers) > 0 {
+	if compilers := cmake.DiscoverCompilers(); len(compilers) > 0 {
 		fmt.Println(colorize(ansiBold, "Detected toolchains (use with 'cmaker build --compiler=<path>'):"))
 		for _, c := range compilers {
 			fmt.Printf("  -- %s\n", c)
@@ -157,41 +153,4 @@ func runDoctor() error {
 	}
 	okf("All required tools are ready.")
 	return nil
-}
-
-var compilerNameRe = regexp.MustCompile(`^(clang\+\+|clang|g\+\+|gcc)(-[0-9]+(\.[0-9]+)?)?$`)
-
-// discoverCompilers enumerates every C/C++ compiler found on PATH plus a
-// handful of common non-PATH install locations, so users with multiple
-// toolchains installed (several Homebrew/apt clang or gcc versions, a
-// cross-compiler) can see and pick between them, instead of doctor only
-// reporting a single ready/missing clang++/g++.
-func discoverCompilers() []string {
-	dirs := filepath.SplitList(os.Getenv("PATH"))
-	dirs = append(dirs, "/opt/homebrew/opt/llvm/bin", "/usr/local/opt/llvm/bin")
-
-	seen := map[string]bool{}
-	var found []string
-	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.IsDir() || !compilerNameRe.MatchString(e.Name()) {
-				continue
-			}
-			full := filepath.Join(dir, e.Name())
-			if seen[full] {
-				continue
-			}
-			if info, err := os.Stat(full); err != nil || info.Mode()&0111 == 0 {
-				continue
-			}
-			seen[full] = true
-			found = append(found, full)
-		}
-	}
-	sort.Strings(found)
-	return found
 }

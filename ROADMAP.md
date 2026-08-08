@@ -141,9 +141,19 @@ planned fix, grouped by priority, so we can work through them one at a time.
       dedicated test targets separate from the main executable — that's
       real GoogleTest-style multi-target support, which needs §16's
       library/multi-target work first).
-- [ ] `cmaker build`/`cmaker new` still don't pass `-j` to
-      `cmake --build` (carried over from the §5 follow-up list, still
-      unaddressed).
+- [x] `cmaker build` passing `-j` to `cmake --build` — resolved by §20
+      (2026-08-05, `buildCommandArgs` defaulting to `runtime.NumCPU()`);
+      this bullet was just never crossed off when that landed. `cmaker
+      new`'s own pre-flight step turned out not to need the same fix: it
+      only ever runs `cmake -S ... -B build` (a pure configure), never
+      `cmake --build` - confirmed by reading `cmd/new.go` and by timing a
+      real `cmaker new --template=raylib -v` (58s wall time with zero
+      "Building CXX object" lines in the output, all of it CMake's own
+      configure-time `try_compile` probes plus the network fetch of
+      raylib's source). `-j` governs `cmake --build`'s parallelism; there
+      is no equivalent for `cmake -S`'s configure phase, so "pass `-j` to
+      the pre-flight configure" was never actually an actionable gap -
+      just an inaccurate diagnosis in the original note (2026-08-08).
 
 ## 4. Templates — ✅ DONE (2026-07-04)
 
@@ -228,10 +238,14 @@ and CPM.cmake wiring in `generateCMake`.
 
 ### Follow-ups discovered during this validation
 
-- [ ] `cmaker build`/`cmaker new`'s pre-flight configure don't pass `-j` to
-      `cmake --build`, so CPM-fetched native library builds (raylib, SFML)
-      are unnecessarily slow (single-threaded compiles). Still open —
-      also tracked in §3.
+- [x] ~~`cmaker build`/`cmaker new`'s pre-flight configure don't pass `-j`
+      to `cmake --build`~~ — resolved for `cmaker build` by §20
+      (2026-08-05); `cmaker new`'s pre-flight step turned out to have no
+      `cmake --build` call to pass `-j` to in the first place (it's
+      configure-only) - see §3's writeup (2026-08-08) for the full
+      investigation, including a real timed `--template=raylib` run
+      confirming the observed slowness is configure-time `try_compile`
+      probes and network fetch, not an uncompiled/single-threaded build.
 - [x] ~~Pre-flight config failures during `cmaker new` are silently
       swallowed unless `-v` is passed~~ — **fixed in §3** (2026-07-05):
       the pre-flight configure now captures stderr and surfaces its first
@@ -441,7 +455,7 @@ Split the single-directory `package main` (~3000 lines across 20 files) into:
       under a pty harness, stayed alive in its event loop rather than
       crashing on startup).
 
-## 10. Compiler & toolchain selection — ✅ MOSTLY DONE (2026-07-05)
+## 10. Compiler & toolchain selection — ✅ DONE (2026-08-08)
 
 Motivation: a dev machine often has several C/C++ toolchains installed
 (system clang, multiple Homebrew/apt clang or gcc versions, a cross
@@ -471,11 +485,51 @@ way to pin or override it.
       compiler path now fails immediately with
       `compiler "..." does not appear to support -std=c++26: ...`, before
       `cmake` is ever invoked.
-- [ ] Surface an interactive compiler picker in the TUI (New Project flow
+- [x] Surface an interactive compiler picker in the TUI (New Project flow
       and a "Doctor" detail view) when more than one toolchain is detected.
-      **Not done** — `discoverCompilers()` exists and is reusable, but no
-      TUI view calls it yet; left open since the TUI's New Project flow and
-      Doctor view would both need new screens.
+      `discoverCompilers()` was moved from `cmd/doctor.go` into
+      `internal/cmake.DiscoverCompilers()` (pure, no CLI concerns) since
+      `internal/tui` can't import `cmd` - `cmd` imports `internal/tui` for
+      the bare-`cmaker` launch, so the reverse direction would be an import
+      cycle; `cmd/doctor.go` now just calls the moved function, unchanged
+      behavior. The New Project wizard gained a third form step (compiler
+      picker, after the template picker) that's skipped entirely when 0 or
+      1 toolchain is detected - only shown when there's an actual choice to
+      make, exactly as scoped. Picking anything but "(default)" appends
+      `--compiler=<path>` to the `cmaker new` re-exec args
+      (`newProjectArgs()`), the same flag a CLI user would pass by hand.
+      The "Doctor" detail-view half of this bullet is satisfied by the
+      existing generic Doctor menu item rather than a bespoke new screen -
+      it already re-execs `cmaker doctor` and streams its real output
+      (which includes the full "Detected toolchains" list, via the same
+      moved function) into the TUI's scrollable log viewport; a separate
+      structured toolchain-detail screen would show the identical
+      information with more code, not more information, so this was a
+      deliberate scope call rather than a silently-skipped half of the
+      bullet.
+  - Unit tests (`internal/cmake/discover_test.go`, `internal/tui/
+    tui_test.go`, 11 new cases total) drive the form-step state machine
+    directly (skip-with-<=1-compiler, show-with->1, up/down navigation
+    bounds, backspace back to the template step, and the exact
+    `--compiler=<path>` args produced) without needing a real terminal.
+  - Verified live: `cmaker doctor` on this machine genuinely detects 6
+    toolchains (`g++-15`, `gcc-15`, `clang`, `clang++`, `g++`, `gcc`)
+    unchanged after the `discoverCompilers` move; the TUI was launched
+    under a real pty (`script(1)`) and confirmed to boot, render (a real
+    frame containing "New Project" was captured), and stay alive with no
+    panic/crash - scripted keystroke-by-keystroke interaction through a
+    synthetic pty proved too unreliable to use for the picker's own
+    multi-step flow specifically (bubbletea/termenv's terminal
+    background-color-query handshake stalls for many seconds against a
+    bare `pty.fork()` harness with no real terminal emulator answering
+    it, an environment quirk unrelated to this feature's correctness -
+    the same "just confirm it boots without crashing" bar was already
+    the project's own established standard for TUI verification, see
+    §9). The actual mechanism the picker drives -
+    `cmaker new --compiler=<path>` - was verified directly instead: ran
+    it with a real `/usr/bin/clang++` path, confirmed `cmaker.yaml`
+    recorded `compiler: /usr/bin/clang++`, and `cmaker run` built and ran
+    the project successfully against that compiler.
 
 ## 11. C projects and hybrid C/C++ projects — ✅ DONE (2026-07-05)
 
@@ -1507,7 +1561,7 @@ be able to extend it without forking.
       `cmaker` can pull from - real infrastructure and moderation
       questions attached to this one, left for a future chunk.
 
-## 24. AI-assisted autoheal — ✅ v1 DONE (2026-08-06)
+## 24. AI-assisted autoheal — ✅ DONE (2026-08-08)
 
 Motivation, per user: capture the last N build/run logs, and `cmaker heal`
 uses "agentic AI" to read those logs plus the codebase and produce a patch
@@ -1552,10 +1606,31 @@ code" is not an acceptable default for anything, however good the model is.
       directly" principle §19's accessor generator already established,
       arrived at here specifically because live testing caught the model
       getting it wrong.
-- [ ] **`cmaker heal --apply` v2** - not done, left open exactly as scoped
-      (v1 was the goal for this pass): applies the diff, but only ever on
-      a clean git working tree, re-runs the build immediately after, and
-      reports whether it actually fixed the failure.
+- [x] **`cmaker heal --apply` v2**: new `internal/heal/apply.go`
+      (`WorkingTreeClean`/`Apply`, pure - shells out to `git status
+      --porcelain`/`git apply`, no CLI concerns) and `internal/heal/
+      cache.go` (`SaveSuggestion`/`LoadSuggestionFor`/`ClearSuggestion`,
+      persisting the last diagnosis to `.cmaker/heal/last-suggestion.json`,
+      gitignored, keyed to the exact failing log path it was computed
+      from). `--apply` refuses outright on a dirty working tree (`git
+      status --porcelain` non-empty) before doing anything else, including
+      before any LLM call - exactly the "only ever on a clean git working
+      tree" the roadmap called for. Per the user's explicit design: if the
+      current failing log already has a cached diagnosis (i.e. `cmaker
+      heal` already ran, or diagnosed, for this exact failure), `--apply`
+      reuses it directly - no second LLM call, no re-confirmation, since
+      the diff was already shown and reviewed once. Otherwise it runs the
+      normal diagnosis, prints the diff (same `printDiff` as plain `cmaker
+      heal`), and requires an explicit `y`/`yes` confirmation
+      (`confirmYesNo`, reads stdin - a failed/ambiguous read, e.g. a
+      non-terminal stdin, is treated as "no") before applying anything.
+      Either path then runs `heal.Apply` (`git apply`), clears the cache
+      (so a second `--apply` for the same log never risks silently
+      reapplying an already-applied diff), immediately rebuilds
+      (`runBuild`), and reports which of the two different claims held:
+      "the diff applied cleanly" vs. "the build now actually succeeds" - a
+      failed rebuild leaves the diff applied (for `git diff`/manual
+      inspection) rather than silently reverting it.
 - [x] **Explicit non-goals held to**: no multi-file architectural rewrites,
       no applying without a human reviewing first, no unattended/CI usage -
       v1 only ever prints a diff for a human to read.
@@ -1601,12 +1676,49 @@ code" is not an acceptable default for anything, however good the model is.
   `cmd/integration_test.go` case (`TestIntegrationBuildLogCapture`,
   network-free) cover the AI-independent log-capture half under
   `go test`/`go test -tags=integration` without needing an API key.
-- [ ] Not done, left open rather than silently dropped: §24's own explicit
-      v2 (`--apply`), and (also inherited from the design pivot above)
-      multi-hunk-per-file diffs (today's `unifiedDiff` deliberately emits
-      one hunk per file, sufficient for the small, focused fixes this
-      targets, but would need splitting for a fix touching widely
-      separated parts of a large file).
+- **`--apply` verified end-to-end against a real failing build and a real
+  `claude-haiku-4-5` model call** (not mocked): scaffolded a project,
+  broke it (`compute_total` called but never declared), committed the
+  broken state so the tree was clean, and ran `cmaker build` to capture a
+  real `-fail.log`.
+  - `cmaker heal --apply` with no prior diagnosis: correctly diagnosed
+    fresh, printed the diff, prompted for confirmation, and - declining
+    with `n` - left the working tree completely untouched (`git status`
+    clean) while still caching the diagnosis for reuse, exactly as
+    designed.
+  - Running `cmaker heal --apply` again for the *same* failing log:
+    correctly reused the cached diagnosis (no second LLM call, no
+    re-prompt), applied it via a real `git apply`, rebuilt, and reported
+    "Fix verified: the rebuild succeeded" - confirmed by actually running
+    the resulting binary (`Total: 5`, the correct output).
+  - Re-broke the build, dirtied the working tree with an untracked file,
+    and confirmed `cmaker heal --apply` refused outright with the clean-
+    working-tree error before attempting anything, including before any
+    LLM call.
+- **Real bug found and fixed by this exact live run, in already-shipped
+  v1 code (`parseFileBlocks`), not something v2 introduced**: the first
+  live diagnosis came back with the model's proposed file content ending
+  in `--- file: end ---` - it had imitated its own required `--- file:
+  <path> ---` delimiter syntax as an ad hoc, never-requested "no more
+  files" marker. v1's existing stray-trailing-line defense
+  (`stripStrayTrailingSeparator`) only recognized a bare-dashes line
+  (`---`, the one specific case caught during v1's own live testing) and
+  missed this differently-shaped variant, so `+--- file: end ---` and a
+  `\ No newline at end of file` marker silently leaked into the computed
+  diff - exactly the kind of corruption that would have applied "cleanly"
+  and then broken the rebuild, the same failure class v1's original bug
+  #4 above was about, just a variant of the artifact v1's fix didn't
+  happen to cover. Fixed by generalizing the check
+  (`strayFileBlockMarkerRe`) to also strip a trailing line matching the
+  package's own `--- file: ... ---` shape, with a new regression test
+  (`TestSuggestStripsStrayFileBlockMarker`) reproducing the exact response
+  text observed live. Re-ran the same live scenario after the fix and got
+  a clean diff with no stray content.
+- Not done, left open rather than silently dropped: (inherited from the
+  v1 design pivot) multi-hunk-per-file diffs - today's `unifiedDiff`
+  deliberately emits one hunk per file, sufficient for the small, focused
+  fixes this targets, but would need splitting for a fix touching widely
+  separated parts of a large file.
 
 ## 25. AI-assisted natural-language scaffolding — ✅ DONE (2026-08-06)
 

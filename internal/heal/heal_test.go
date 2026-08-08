@@ -148,6 +148,33 @@ func TestSuggestStripsStrayTrailingSeparator(t *testing.T) {
 	}
 }
 
+func TestSuggestStripsStrayFileBlockMarker(t *testing.T) {
+	// Real, observed model behavior from a live end-to-end 'cmaker heal
+	// --apply' run: the model closed its response with "--- file: end ---",
+	// imitating its own required "--- file: <path> ---" delimiter syntax as
+	// an ad hoc (and never requested) "no more files" marker. Since it has
+	// no trailing newline in the raw response, fileBlockRe (anchored on
+	// "\n") never matches it as a genuine new block header, so without this
+	// defense it silently becomes trailing content of the last real block -
+	// corrupting the applied fix with a bogus extra line.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "src", "main.cpp"), "int main() { foo(); }\n")
+	logPath := filepath.Join(dir, "build.log")
+	writeFile(t, logPath, "src/main.cpp:1:15: error: use of undeclared identifier 'foo'\n")
+
+	fc := &fakeCompleter{response: "--- file: src/main.cpp ---\nint main() { return 0; }\n--- file: end ---"}
+	got, err := Suggest(context.Background(), fc, dir, logPath)
+	if err != nil {
+		t.Fatalf("Suggest() error = %v", err)
+	}
+	if strings.Contains(got.Diff, "file: end") {
+		t.Errorf("Suggest().Diff still contains the stray trailing file-block marker: %q", got.Diff)
+	}
+	if !strings.Contains(got.Diff, "+int main() { return 0; }") {
+		t.Errorf("Suggest().Diff = %q, missing the real fix", got.Diff)
+	}
+}
+
 func TestSuggestNoFixFound(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "src", "main.cpp"), "int main() {}\n")

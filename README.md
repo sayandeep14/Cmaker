@@ -452,6 +452,11 @@ invoked as `zig cc`/`zig c++` any other way CMake understands), and it's the
 one compiler override that works for *both* C and C++ in a hybrid project
 at once.
 
+The [TUI](#the-interactive-dashboard-tui)'s New Project wizard surfaces the
+same detection interactively: when more than one toolchain is found, it
+adds a compiler-picker step after the template picker instead of making
+you already know a path to type.
+
 ---
 
 ## Build speed: parallelism and compiler caching
@@ -888,9 +893,36 @@ cmaker heal --kind=build   # only consider build failures, not run
 cmaker heal --model=...    # override the Anthropic model used
 ```
 
-**`--apply`** (writing the suggested fix to disk automatically, gated
-behind a clean git working tree) is a deliberate, not-yet-implemented
-follow-up — see `ROADMAP.md` §24. v1 only ever suggests.
+**`cmaker heal --apply`** writes the suggested fix to disk, but with real
+guardrails, not a blind auto-apply:
+
+```bash
+cmaker heal --apply
+```
+
+- Refuses outright unless the git working tree is clean (`git status
+  --porcelain` is empty) — an LLM-proposed patch never lands on top of
+  already-dirty state, where a partial apply or a later revert would
+  become ambiguous about what came from you vs. the patch.
+- If this exact failure hasn't been diagnosed yet, it runs the same
+  diagnosis as plain `cmaker heal`, prints the diff, and **asks you to
+  confirm** (`Apply this diff? [y/N]`) before touching anything — nothing
+  is applied without an explicit `y`.
+- If you already ran `cmaker heal` (or a prior `--apply` you declined) for
+  this exact failing log, it reuses that already-reviewed diagnosis
+  directly — no second LLM call, no re-asking for confirmation, since you
+  already saw the diff once.
+- After applying, it immediately rebuilds and reports whether the fix
+  actually worked — "the diff applied cleanly" and "the build now
+  succeeds" are different claims, and only the second one matters. If the
+  rebuild still fails, the diff is left applied (so you can inspect it
+  with `git diff`) rather than silently reverted.
+
+The diagnosis is cached per failing log (`.cmaker/heal/`, gitignored) so
+the "already reviewed" reuse above works across separate `cmaker heal`
+invocations; it's cleared the moment a diff is actually applied, so a
+second `--apply` for the same log path always re-diagnoses rather than
+risking a stale reapply.
 
 ---
 
@@ -947,8 +979,16 @@ a user's existing source.
 Run bare `cmaker` inside a terminal (with no subcommand) and you get a
 full-screen dashboard instead of a help page — arrow keys + Enter to
 navigate, live streaming output for build/run/watch, a New Project wizard
-(name → template picker), and your saved named configs listed right
-alongside the built-in commands.
+(name → template picker → compiler picker, when there's one to make), and
+your saved named configs listed right alongside the built-in commands.
+
+The compiler picker step only shows up when more than one toolchain is
+actually detected on your machine (the same detection `cmaker doctor`
+reports) — with 0 or 1 found, there's nothing to choose between, so the
+wizard goes straight from template to creating the project, exactly like
+before this step existed. Picking anything other than "(default)" passes
+`--compiler=<path>` through to `cmaker new`, same as running it from the
+CLI yourself.
 
 ```bash
 cmaker            # launches the dashboard if stdout is a terminal
@@ -1232,10 +1272,12 @@ the full content of the nth one (see
 
 Suggests a fix for the most recent build/run failure (see
 [above](#buildrun-logs-and-ai-assisted-healing-cmaker-logs--cmaker-heal)).
-Requires `ANTHROPIC_API_KEY`. Nothing is written to disk.
+Requires `ANTHROPIC_API_KEY`. Nothing is written to disk unless `--apply`
+is given.
 
 - `--kind string` — only consider `build` or `run` failures (default: either, most recent wins)
 - `--model string` — override the Anthropic model used
+- `--apply` — apply the suggested fix (after confirmation, unless reusing an already-reviewed diagnosis) and rebuild to verify it; requires a clean git working tree
 </details>
 
 <details>
@@ -1261,6 +1303,7 @@ myapp/
 ├── include/              # your headers
 ├── build/                # cmake's build directory (safe to delete: cmaker clean)
 ├── .cmaker/logs/          # build/run log captures, gitignored (see 'cmaker logs'/'cmaker heal')
+├── .cmaker/heal/          # cached 'cmaker heal' diagnosis, gitignored (see 'cmaker heal --apply')
 ├── rust/                 # only if --with-rust
 ├── zig/                  # only if --with-zig
 ├── bench/                # only if --with-benchmarks (see 'cmaker bench')

@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"cmaker/internal/cmake"
 	"cmaker/internal/config"
 	"cmaker/internal/templates"
 )
@@ -109,10 +110,12 @@ type model struct {
 	cancel      context.CancelFunc
 
 	// new-project form state
-	formStep    int // 0 = name input, 1 = template picker
+	formStep    int // 0 = name input, 1 = template picker, 2 = compiler picker (only shown when >1 toolchain detected)
 	nameInput   textinput.Model
 	templates   []templates.Meta
 	templateSel int
+	compilers   []string // detected toolchains (cmake.DiscoverCompilers); the picker step is skipped entirely when len <= 1
+	compilerSel int      // 0 = "default - let CMake choose", 1..len(compilers) = compilers[compilerSel-1]
 
 	// pendingProjectDir is set right before a "new" command runs so that, on
 	// success, subsequent commands are run inside the freshly scaffolded
@@ -153,6 +156,7 @@ func newModel() *model {
 		spin:        sp,
 		nameInput:   ti,
 		templates:   tmpls,
+		compilers:   cmake.DiscoverCompilers(),
 	}
 }
 
@@ -294,6 +298,7 @@ func (m *model) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.nameInput.SetValue("")
 			m.nameInput.Focus()
 			m.templateSel = 0
+			m.compilerSel = 0
 			return m, textinput.Blink
 		default:
 			return m.startCommand(item.label, item.args)
@@ -338,14 +343,51 @@ func (m *model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.nameInput.Focus()
 			return m, textinput.Blink
 		case "enter":
-			name := strings.TrimSpace(m.nameInput.Value())
-			tmpl := m.templates[m.templateSel].Name
-			args := []string{"new", name, "--template", tmpl, "--quiet"}
-			m.pendingProjectDir = name
-			return m.startCommand("New Project: "+name, args)
+			// The compiler picker is only worth showing when there's an
+			// actual choice to make - with 0 or 1 toolchain detected,
+			// there's nothing to pick between, so skip straight to
+			// creating the project exactly like before this step existed.
+			if len(m.compilers) > 1 {
+				m.formStep = 2
+				m.compilerSel = 0
+				return m, nil
+			}
+			return m.startCommand("New Project: "+strings.TrimSpace(m.nameInput.Value()), m.newProjectArgs())
+		}
+
+	case 2: // compiler picker (only reached when len(m.compilers) > 1)
+		switch msg.String() {
+		case "up", "k":
+			if m.compilerSel > 0 {
+				m.compilerSel--
+			}
+		case "down", "j":
+			if m.compilerSel < len(m.compilers) {
+				m.compilerSel++
+			}
+		case "backspace":
+			m.formStep = 1
+			return m, nil
+		case "enter":
+			return m.startCommand("New Project: "+strings.TrimSpace(m.nameInput.Value()), m.newProjectArgs())
 		}
 	}
 	return m, nil
+}
+
+// newProjectArgs builds the 'cmaker new' re-exec args from the form's
+// current selections - the name and template are always set; --compiler is
+// only appended when the compiler picker was shown (len(m.compilers) > 1)
+// and something other than "(default)" (compilerSel == 0) was chosen.
+func (m *model) newProjectArgs() []string {
+	name := strings.TrimSpace(m.nameInput.Value())
+	tmpl := m.templates[m.templateSel].Name
+	args := []string{"new", name, "--template", tmpl, "--quiet"}
+	if m.compilerSel > 0 && m.compilerSel-1 < len(m.compilers) {
+		args = append(args, "--compiler", m.compilers[m.compilerSel-1])
+	}
+	m.pendingProjectDir = name
+	return args
 }
 
 func (m *model) startCommand(label string, args []string) (tea.Model, tea.Cmd) {
@@ -465,6 +507,25 @@ func (m *model) renderForm() string {
 				sb.WriteString(styleMenuItemSelected.Render("❯ "+line) + "\n")
 			} else {
 				sb.WriteString(styleMenuItem.Render("  "+line) + "\n")
+			}
+		}
+		next := "enter create"
+		if len(m.compilers) > 1 {
+			next = "enter continue"
+		}
+		sb.WriteString("\n" + styleHint.Render("↑/↓ choose   "+next+"   backspace back   esc cancel"))
+		body = sb.String()
+
+	case 2:
+		var sb strings.Builder
+		sb.WriteString(styleFormLabel.Render("Compiler") + "\n\n")
+		sb.WriteString("\n" + styleHint.Render("Multiple toolchains were detected - pick one, or use CMake's default.") + "\n\n")
+		options := append([]string{"(default) — let CMake choose"}, m.compilers...)
+		for i, opt := range options {
+			if i == m.compilerSel {
+				sb.WriteString(styleMenuItemSelected.Render("❯ "+opt) + "\n")
+			} else {
+				sb.WriteString(styleMenuItem.Render("  "+opt) + "\n")
 			}
 		}
 		sb.WriteString("\n" + styleHint.Render("↑/↓ choose   enter create   backspace back   esc cancel"))

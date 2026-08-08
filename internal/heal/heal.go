@@ -195,16 +195,30 @@ func parseFileBlocks(raw string) map[string]string {
 	return result
 }
 
-// stripStrayTrailingSeparator removes a final line that's just dashes
-// (e.g. "---", "----------") - never valid content in a C/C++ file, so
-// safe to treat as a stray artifact rather than an intended change.
+// strayFileBlockMarkerRe matches a line that looks like this package's own
+// "--- file: <path> ---" delimiter (see fileBlockRe below) but wasn't
+// followed by a newline in the raw response - which is exactly why
+// fileBlockRe itself (anchored on a trailing "\n") never matched it as a
+// genuine new block header, leaving it stuck as trailing content of the
+// last real block instead. Observed live: a real claude-haiku-4-5 response
+// closed its output with "--- file: end ---", seemingly imitating its own
+// required delimiter syntax as an ad hoc "no more files" marker despite the
+// prompt never asking for one.
+var strayFileBlockMarkerRe = regexp.MustCompile(`^--- file: .+ ---$`)
+
+// stripStrayTrailingSeparator removes a final line that's either just
+// dashes (e.g. "---", "----------") or a stray "--- file: ... ---"-shaped
+// marker (see strayFileBlockMarkerRe) - neither is ever valid content in a
+// C/C++ file, so both are safe to treat as stray artifacts rather than an
+// intended change.
 func stripStrayTrailingSeparator(s string) string {
 	lines := strings.Split(s, "\n")
 	if len(lines) == 0 {
 		return s
 	}
 	trimmed := strings.TrimSpace(lines[len(lines)-1])
-	if len(trimmed) >= 3 && strings.Trim(trimmed, "-") == "" {
+	isDashesOnly := len(trimmed) >= 3 && strings.Trim(trimmed, "-") == ""
+	if isDashesOnly || strayFileBlockMarkerRe.MatchString(trimmed) {
 		lines = lines[:len(lines)-1]
 	}
 	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
