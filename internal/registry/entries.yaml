@@ -49,7 +49,8 @@
   package_managers:
     brew: opencv
     apt: libopencv-dev
-  notes: Computer vision library - installed via your system package manager (brew/apt), not built from source (not realistically CPM-fetchable at this size)
+    pacman: mingw-w64-ucrt-x86_64-opencv
+  notes: Computer vision library - installed via your system package manager (brew/apt/MSYS2's pacman on Windows), not built from source (not realistically CPM-fetchable at this size)
 - name: onnxruntime
   kind: prebuilt_archive
   archive_url_template: "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-{platform}-1.28.0.tgz"
@@ -68,7 +69,8 @@
   package_managers:
     brew: boost
     apt: libboost-all-dev
-  notes: Collection of portable C++ source libraries - installed via your system package manager (brew/apt), not built from source (not realistically CPM-fetchable at this size). Used by the 'boost-beast' template.
+    pacman: mingw-w64-ucrt-x86_64-boost
+  notes: Collection of portable C++ source libraries - installed via your system package manager (brew/apt/MSYS2's pacman on Windows), not built from source (not realistically CPM-fetchable at this size). Used by the 'boost-beast' template.
 
 # --- §26: libraries used by the domain templates (backend/GUI/audio/ML),
 # also independently installable via 'cmaker install <name>' into any
@@ -194,4 +196,5 @@
   package_managers:
     brew: gtkmm4
     apt: libgtkmm-4.0-dev
-  notes: GTKmm native GUI toolkit (used by the 'gtkmm' template) - GTK ships no CMake package config at all, only pkg-config, installed via your system package manager (brew/apt)
+    pacman: mingw-w64-ucrt-x86_64-gtkmm-4.0
+  notes: GTKmm native GUI toolkit (used by the 'gtkmm' template) - GTK ships no CMake package config at all, only pkg-config, installed via your system package manager (brew/apt/MSYS2's pacman on Windows)

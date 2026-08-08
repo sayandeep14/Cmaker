@@ -60,19 +60,20 @@ Hello from Cmaker!
 
 ## Install
 
-**macOS — one line, no manual clone needed:**
+**macOS and Linux — one line, no manual clone needed:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sayandeep14/Cmaker/main/scripts/install.sh | bash
 ```
 
-This downloads cmaker's source straight from GitHub (via `git clone` if
-`git` is available, falling back to a plain source tarball otherwise — no
-prebuilt release exists yet, see `ROADMAP.md` §8, so this still builds
-locally with the Go toolchain rather than downloading a binary) and runs
-the same guided installer described below. Nothing is cloned into your
-current directory — it all happens in a temp directory that's cleaned up
-automatically.
+Same script, same one-liner, on both — it detects which OS you're on and
+adapts. This downloads cmaker's source straight from GitHub (via `git
+clone` if `git` is available, falling back to a plain source tarball
+otherwise — no prebuilt release exists yet, so this still builds locally
+with the Go toolchain rather than downloading a binary) and runs the
+guided installer described below. Nothing is cloned into your current
+directory — it all happens in a temp directory that's cleaned up
+automatically. 64-bit only for now (`x86_64`/`arm64`/`aarch64`).
 
 Already have this repo cloned? Run the installer directly instead — it
 builds from whatever's in your working tree (including uncommitted local
@@ -85,17 +86,32 @@ changes), rather than fetching a fresh copy from GitHub:
 Either way, this is the guided installer: it checks that Go 1.25+ is
 available (needed to build cmaker itself — there's no prebuilt release
 yet), builds cmaker, installs it to `~/.cmaker/bin` (no `sudo` needed), and
-adds that directory to `PATH` in your shell's rc file.
+adds that directory to `PATH` in your shell's rc file (`~/.zshrc` for zsh;
+`~/.bash_profile` for bash on macOS since Terminal.app launches login
+shells, `~/.bashrc` for bash on Linux since most terminal emulators there
+launch non-login interactive shells instead; `~/.config/fish/config.fish`
+for fish).
 
-It then checks for `cmake`, a C/C++ compiler, `cargo`/`rustc`, and `zig` —
-everything a cmaker project can need, whether or not you actually use
-`--with-rust`/`--with-zig` — and **offers to install whichever are
+It then checks for `cmake`, a C/C++ compiler, `gdb`, `cargo`/`rustc`, and
+`zig` — everything a cmaker project can need, whether or not you actually
+use `--with-rust`/`--with-zig` — and **offers to install whichever are
 missing**, each with its own `[y/N]` confirmation (nothing runs without you
-saying yes to that specific tool): `cmake`/`zig` via Homebrew (offering to
-install Homebrew itself first if it isn't found), a compiler via Xcode
-Command Line Tools, and Rust via `rustup`. Declining any of them is fine —
-cmaker still installs and works, just prints the manual install hint
-instead (same as plain `cmaker doctor` always has).
+saying yes to that specific tool):
+
+- **macOS**: `cmake`/`gdb`/`zig` via Homebrew (offering to install Homebrew
+  itself first if it isn't found), a compiler via Xcode Command Line
+  Tools, Rust via `rustup`.
+- **Linux**: `cmake`/a compiler (`build-essential`)/`gdb` via `apt`
+  (Debian/Ubuntu only — other distros get a manual install hint instead,
+  matching `cmaker install`'s own existing package-manager support; runs
+  under `sudo` unless the script is already running as root, common in
+  containers/CI), Rust via `rustup` the same way as macOS. `zig` has no
+  reliable one-line install across Linux distros, so it's reported with a
+  link to <https://ziglang.org/download/> instead of auto-installed.
+
+Declining any offer is fine — cmaker still installs and works, just prints
+the manual install hint instead (same as plain `cmaker doctor` always
+has).
 
 Finally it optionally collects an Anthropic API key for the AI-assisted
 commands (`heal`, `describe`, `explain`, `generate accessors`) and saves it
@@ -104,12 +120,49 @@ you plainly if it didn't work — cmaker itself is still fully installed and
 usable either way, just without those specific AI features until the key is
 fixed. Safe to re-run: it won't duplicate the `PATH` line, won't re-ask
 about a tool it already found, and re-running with an empty answer at the
-key prompt keeps whatever key you saved before. Linux and Windows support
-is planned — see `ROADMAP.md` §30.
+key prompt keeps whatever key you saved before.
+
+**Verified live** against both a real macOS machine and a real Ubuntu
+24.04 environment (Docker, both as root and as a non-root user with
+`sudo`) — every prerequisite installed successfully from a clean state,
+and the resulting toolchain built and ran a real scaffolded project.
 
 **Uninstalling:** remove `~/.cmaker` (binary, saved API key) and delete the
 `# Added by the cmaker installer` block from your shell rc file
-(`~/.zshrc`/`~/.bash_profile`/`~/.config/fish/config.fish`).
+(`~/.zshrc`/`~/.bash_profile`/`~/.bashrc`/`~/.config/fish/config.fish`).
+
+**Windows (64-bit) — one line, no manual clone needed:**
+
+```powershell
+irm https://raw.githubusercontent.com/sayandeep14/Cmaker/main/scripts/install.ps1 | iex
+```
+
+Or, from an existing clone: `.\scripts\install.ps1`. This is the same
+guided installer as macOS's, adapted for Windows: installs to
+`%USERPROFILE%\.cmaker\bin` (no Administrator rights needed), adds that to
+your User `PATH`, and saves an API key to `%USERPROFILE%\.cmaker\env` if
+you give it one.
+
+The one real difference is the C/C++ toolchain: cmaker generates GCC/Clang-
+style compiler flags, not MSVC's, so the compiler prerequisite here is
+[MSYS2](https://www.msys2.org/) (a real GCC-compatible MinGW-w64/UCRT
+toolchain — `gcc`/`g++`/`gdb`/`make`, installed via `pacman -S
+mingw-w64-ucrt-x86_64-toolchain`) rather than Visual Studio Build Tools.
+`cmake`, Rust (`rustup`), and `zig` are installed via
+[winget](https://aka.ms/getwinget) instead (it ships with Windows 10
+1709+/11 already, so nothing extra to bootstrap) — offered the same way,
+one `[y/N]` confirmation per tool. If a registry dependency needs a system
+package (`opencv`/`boost`/`gtkmm`), `cmaker install`/`cmaker add` installs
+it via MSYS2's `pacman` too, specifically because it needs to be built
+against the *same* MinGW compiler ABI cmaker itself uses — a Chocolatey/
+winget package built for MSVC wouldn't link against MinGW-compiled code.
+
+**Not yet live-verified on a real Windows machine** (this project's
+development happens on macOS) — the script's own logic was verified end-to-
+end through PowerShell 7 running on macOS instead (real source download,
+real `go build`, real file installs, real `cmaker doctor --ai` call), and
+every winget/MSYS2 package ID it references was checked against the actual
+published package manifests rather than assumed.
 
 **Everyone else, or if you'd rather do it by hand:**
 
@@ -266,20 +319,21 @@ of this writing:
 | `llama-cpp` | LLM inference starter using llama.cpp's C API, fetched via CPM (no model download needed to build/run the demo) |
 | `oatpp` | A minimal real HTTP service using the Oat++ web framework, fetched via CPM |
 | `wxwidgets` | wxWidgets native GUI window, fetched via CPM |
-| `boost-beast` | A minimal real HTTP service using Boost.Beast, installed via your system package manager (brew/apt) |
-| `opencv` | Computer vision starter using OpenCV, installed via your system package manager (brew/apt) |
+| `boost-beast` | A minimal real HTTP service using Boost.Beast, installed via your system package manager (brew/apt/MSYS2's pacman on Windows) |
+| `opencv` | Computer vision starter using OpenCV, installed via your system package manager (brew/apt/MSYS2's pacman on Windows) |
 | `drogon` | A minimal real HTTP service using the Drogon web framework, fetched via CPM |
 | `onnxruntime` | ONNX Runtime inference starter, fetched as a platform-matched prebuilt release archive |
-| `gtkmm` | GTKmm native GUI window, installed via your system package manager (brew/apt) |
+| `gtkmm` | GTKmm native GUI window, installed via your system package manager (brew/apt/MSYS2's pacman on Windows) |
 
 ```bash
 cmaker new mygame --template=raylib
 ```
 
 These domain templates are the first slice of a much larger planned
-library (GUI/audio/backend/ML frameworks beyond what's here today) — see
-`ROADMAP.md` §26 for what's next and why some frameworks (JUCE, libtorch,
-TensorRT, ...) need more than a template to add well.
+library (GUI/audio/backend/ML frameworks beyond what's here today) — some
+frameworks (JUCE, libtorch, TensorRT, ...) need more than a template to add
+well (licensing, build-system complexity, or both), so they aren't here
+yet.
 
 `--lang`, `--with-rust`, and `--with-zig` (see below) currently only compose
 with `--template=default` — the other templates are concrete C++ dependency
@@ -342,8 +396,8 @@ buildable in place.
 
 **Known limits today:** library scaffolding only composes with the default
 C++ template (not `--lang=c`/`hybrid`, not `--with-rust`/`--with-zig`, not
-the dependency-bearing templates like `raylib`/`sfml`) - see `ROADMAP.md`
-§16 for what's tracked as follow-up.
+the dependency-bearing templates like `raylib`/`sfml`) - tracked as
+follow-up work, not yet implemented.
 
 ---
 
@@ -429,9 +483,9 @@ inspecting a real Homebrew `gtkmm4` install, not assumed). `cmaker install`
 handles all three, still in one command:
 
 ```bash
-cmaker install opencv       # shells out to brew/apt to install it, then wires in find_package(OpenCV)
+cmaker install opencv       # shells out to brew/apt/pacman (Windows) to install it, then wires in find_package(OpenCV)
 cmaker install onnxruntime  # downloads+extracts the right prebuilt release for your platform at configure time
-cmaker install gtkmm        # shells out to brew/apt, then wires in via pkg-config (no CMake config exists to find_package)
+cmaker install gtkmm        # shells out to brew/apt/pacman (Windows), then wires in via pkg-config (no CMake config exists to find_package)
 ```
 
 A registry entry's `kind:` decides which of the four acquisition shapes
@@ -773,8 +827,8 @@ set, instead of surfacing `ctest`'s "No tests were found!!!" error. Exit
 code and `--output-on-failure` output are forwarded straight from `ctest`,
 so it composes with CI the same way `cmaker build`/`cmaker run` do. This
 covers the single-executable case cmaker supports today — dedicated test
-targets separate from the main executable (multi-target projects) are
-tracked in `ROADMAP.md` §16.
+targets separate from the main executable (multi-target projects) aren't
+implemented yet.
 
 Known gap: `testing: { enabled: true }` assumes the target itself is
 runnable, so it only works for `target_type: executable` (the default).
@@ -888,10 +942,9 @@ fully intact and adds:
 project never sees (or pays for) a toolchain check it doesn't need.
 
 **Known limits today:** the Rust/Zig crate/library name is fixed
-(`rustlib`/`ziglib`); and a hybrid project's `--compiler` override only
-covers the C++ side unless you use `--compiler=zig` (see above). See
-`ROADMAP.md` §12 for what's still open (a typed `cxx`-bridge option, "zig as
-compiler" verification on non-macOS setups).
+(`rustlib`/`ziglib`); a hybrid project's `--compiler` override only covers
+the C++ side unless you use `--compiler=zig` (see above); and there's no
+typed `cxx`-bridge option for Rust interop yet (raw FFI only).
 
 ---
 
@@ -960,6 +1013,12 @@ cmaker run          # always invokes `crun src/main.cpp`, no CMake build step
 
 `--with` just sets `runner:` in the generated `cmaker.yaml` — you can add or
 remove it from any existing project by editing that field directly.
+
+Under the hood this goes through your interactive login shell (`$SHELL -i
+-c "..."` on macOS/Linux, PowerShell with your `$PROFILE` loaded on
+Windows), not a direct process exec — a runner like `crun` is often a shell
+function/alias defined in your `~/.zshrc`/`~/.bashrc`/PowerShell profile
+rather than a real executable on `PATH`, and a plain exec can't see those.
 
 ---
 
@@ -1499,7 +1558,7 @@ Lists every saved named shortcut for the current project.
 Adds a dependency (see [above](#package-install-a-real-dependency-manager-ux))
 and fetches it immediately - a `cpm`-kind registry entry fetches via CPM as
 always; a `system_package`-kind entry (e.g. `opencv`) installs it via
-brew/apt first; a `prebuilt_archive`-kind entry (e.g. `onnxruntime`)
+brew/apt/pacman (Windows) first; a `prebuilt_archive`-kind entry (e.g. `onnxruntime`)
 resolves and records the right platform's download URL, fetched at the
 next configure (see
 [above](#beyond-cpm-system-packages-and-prebuilt-sdks)).
@@ -1623,13 +1682,12 @@ myapp/
 
 ## Contributing / roadmap
 
-This project is developed against a living roadmap in `ROADMAP.md` —
-every implemented feature is documented there along with what's verified,
-what's a deliberate scope cut, and what's explicitly still open (e.g. a
-typed Rust `cxx` bridge, ML backend templates beyond Eigen, `--backend`/
-`--ml` domain scaffolds, real published Homebrew/goreleaser releases — see
-`PUBLISHING.md` for that last one). Check there before assuming something
-is or isn't supported.
+Known open items, called out inline throughout this README where they're
+most relevant: a typed Rust `cxx` bridge (currently just raw FFI), ML
+backend templates beyond Eigen, `--backend`/`--ml` domain scaffolds beyond
+what's listed above, and real published Homebrew/goreleaser releases (see
+`PUBLISHING.md` for that last one — the install scripts above build from
+source in the meantime).
 
 ## License
 

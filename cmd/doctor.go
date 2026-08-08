@@ -25,16 +25,19 @@ var doctorTools = []tool{
 		"darwin": "brew install cmake", "linux": "sudo apt install cmake  (or your distro's package manager)", "windows": "choco install cmake  (or winget install Kitware.CMake)",
 	}},
 	{name: "make", required: false, installs: map[string]string{
-		"darwin": "xcode-select --install", "linux": "sudo apt install build-essential", "windows": "install via MSYS2 or Visual Studio Build Tools",
+		"darwin": "xcode-select --install", "linux": "sudo apt install build-essential", "windows": "install via MSYS2 (pacman -S mingw-w64-ucrt-x86_64-toolchain) or Visual Studio Build Tools",
 	}},
 	{name: "ninja", required: false, installs: map[string]string{
-		"darwin": "brew install ninja", "linux": "sudo apt install ninja-build", "windows": "choco install ninja",
+		"darwin": "brew install ninja", "linux": "sudo apt install ninja-build", "windows": "winget install -e --id Ninja-build.Ninja  (or choco install ninja)",
 	}},
 	{name: "clang++", required: false, installs: map[string]string{
 		"darwin": "xcode-select --install", "linux": "sudo apt install clang", "windows": "install via LLVM releases",
 	}},
 	{name: "g++", required: false, installs: map[string]string{
-		"darwin": "brew install gcc", "linux": "sudo apt install g++", "windows": "install via MSYS2",
+		"darwin": "brew install gcc", "linux": "sudo apt install g++", "windows": "install via MSYS2 (pacman -S mingw-w64-ucrt-x86_64-toolchain)",
+	}},
+	{name: "gdb", required: false, installs: map[string]string{
+		"darwin": "brew install gdb", "linux": "sudo apt install gdb", "windows": "install via MSYS2 (pacman -S mingw-w64-ucrt-x86_64-toolchain - included with the same group as gcc/g++)",
 	}},
 	{name: "vcpkg", required: false, installs: map[string]string{
 		"darwin": "see https://github.com/microsoft/vcpkg", "linux": "see https://github.com/microsoft/vcpkg", "windows": "see https://github.com/microsoft/vcpkg",
@@ -221,8 +224,11 @@ func reportSystemPackages() {
 
 // systemPackageInstalledVia checks whether e is already installed via
 // whichever of its PackageManagers is actually present on this machine -
-// brew (macOS) and apt/dpkg (Debian/Ubuntu) only, matching
-// installSystemPackage's own supported set (see cmd/install.go).
+// brew (macOS), apt/dpkg (Debian/Ubuntu), and pacman (Windows, via MSYS2)
+// only, matching installSystemPackage's own supported set (see
+// cmd/install.go) - including that pacman check's own GOOS=="windows" gate,
+// for the same reason (a real Arch Linux pacman shouldn't be asked about an
+// MSYS2-specific mingw-w64-ucrt-x86_64- prefixed package name).
 func systemPackageInstalledVia(e registry.Entry) (manager string, installed bool) {
 	if pkg, ok := e.PackageManagers["brew"]; ok {
 		if _, err := exec.LookPath("brew"); err == nil {
@@ -235,6 +241,13 @@ func systemPackageInstalledVia(e registry.Entry) (manager string, installed bool
 		if _, err := exec.LookPath("dpkg"); err == nil {
 			if exec.Command("dpkg", "-s", pkg).Run() == nil {
 				return "apt", true
+			}
+		}
+	}
+	if pkg, ok := e.PackageManagers["pacman"]; ok && runtime.GOOS == "windows" {
+		if _, err := exec.LookPath("pacman"); err == nil {
+			if exec.Command("pacman", "-Q", pkg).Run() == nil {
+				return "pacman", true
 			}
 		}
 	}

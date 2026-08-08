@@ -128,12 +128,8 @@ func runManyViaRunner(runner string, files []string, args []string) error {
 	var failed []string
 	for _, f := range files {
 		infof("--- %s %s ---", runner, f)
-		shell := os.Getenv("SHELL")
-		if shell == "" {
-			shell = "/bin/sh"
-		}
 		parts := append([]string{runner, shellQuote(f)}, quoteAll(args)...)
-		child := exec.Command(shell, "-i", "-c", strings.Join(parts, " "))
+		child := loginShellCommand(strings.Join(parts, " "))
 		child.Stdout, child.Stderr, child.Stdin = os.Stdout, os.Stderr, os.Stdin
 		if err := child.Run(); err != nil {
 			failed = append(failed, f)
@@ -159,28 +155,24 @@ func reportOnlyGlobResult(total int, failed []string) error {
 // forwarding args after it and streaming stdout/stderr/stdin through to the
 // terminal exactly like the default compile-then-run path.
 //
-// This goes through the user's login shell in interactive mode ($SHELL -i
-// -c "...") rather than exec'ing runner directly, since tools like crun are
-// often shell functions/aliases defined in ~/.zshrc or ~/.bashrc - a plain
-// os/exec.Command can only launch real executables on PATH, so it can't see
-// those. Running through the shell also means real executables on PATH
-// continue to work exactly as before.
+// This goes through the user's login shell in interactive mode (see
+// loginShellCommand) rather than exec'ing runner directly, since tools like
+// crun are often shell functions/aliases defined in ~/.zshrc or ~/.bashrc (or,
+// on Windows, a PowerShell $PROFILE function) - a plain os/exec.Command can
+// only launch real executables on PATH, so it can't see those. Running
+// through the shell also means real executables on PATH continue to work
+// exactly as before.
 func runViaRunner(runner, file string, args []string) error {
 	if _, err := os.Stat(file); err != nil {
 		return fmt.Errorf("--only file %q not found: %w", file, err)
 	}
 
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-
 	parts := append([]string{runner, shellQuote(file)}, quoteAll(args)...)
 	cmdLine := strings.Join(parts, " ")
 
-	child := exec.Command(shell, "-i", "-c", cmdLine)
+	child := loginShellCommand(cmdLine)
 	child.Stdout, child.Stderr, child.Stdin = os.Stdout, os.Stderr, os.Stdin
-	infof("Running %s %s via custom runner (%s)...\n", runner, file, shell)
+	infof("Running %s %s via custom runner (%s)...\n", runner, file, child.Path)
 	if err := child.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())
@@ -190,9 +182,35 @@ func runViaRunner(runner, file string, args []string) error {
 	return nil
 }
 
-// shellQuote wraps s in single quotes, escaping any embedded single quotes,
-// so it survives being interpolated into a shell -c command line unchanged.
+// loginShellCommand builds the *exec.Cmd that runs cmdLine through the
+// user's own interactive login shell, so shell functions/aliases defined in
+// its rc/profile (crun-style runners chief among them - see runViaRunner's
+// own doc) are visible, not just real PATH executables. On Windows there's
+// no $SHELL/rc-file convention - the equivalent is PowerShell loading the
+// user's $PROFILE, which happens by default unless -NoProfile is passed (so
+// it deliberately isn't, here, to preserve that parity).
+func loginShellCommand(cmdLine string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.Command("powershell", "-NoLogo", "-Command", cmdLine)
+	}
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	return exec.Command(shell, "-i", "-c", cmdLine)
+}
+
+// shellQuote wraps s in single quotes so it survives being interpolated into
+// a shell -c command line unchanged. The escaping for an embedded single
+// quote differs by shell: POSIX shells have no in-quote escape sequence at
+// all, so the standard trick is to close the quoted string, insert a
+// backslash-escaped literal quote outside it, then reopen the quoted string
+// - while PowerShell's single-quoted strings escape an embedded quote simply
+// by repeating it.
 func shellQuote(s string) string {
+	if runtime.GOOS == "windows" {
+		return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 

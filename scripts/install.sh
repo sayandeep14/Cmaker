@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 #
-# cmaker installer - macOS only for now (Linux/Windows support is planned,
-# see ROADMAP.md §30). Builds cmaker from source via the local Go toolchain
-# (no published prebuilt release exists yet - see ROADMAP.md §8), installs
-# it to a per-user directory (no sudo required), wires that directory onto
-# PATH, checks for cmake/a C++ compiler/cargo+rustc/zig and offers to
-# install whichever are missing (each with its own confirmation prompt -
-# nothing runs without you saying yes), and optionally collects + validates
-# an ANTHROPIC_API_KEY for cmaker's AI-assisted features (heal, describe/
-# improvise, explain, generate accessors) - all of which work fine without
-# one, just without those specific commands.
+# cmaker installer for macOS and Linux (64-bit only for now - Windows has
+# its own scripts/install.ps1). Builds cmaker from source via the local Go
+# toolchain (no published prebuilt release exists yet), installs it to a
+# per-user directory (no sudo required for cmaker's own binary - system
+# prerequisite installs below are a different matter, see step 7), wires
+# that directory onto PATH, checks for cmake/a C/C++ compiler+gdb/cargo+
+# rustc/zig and offers to install whichever are missing (each with its own
+# confirmation prompt - nothing runs without you saying yes), and
+# optionally collects + validates an ANTHROPIC_API_KEY for cmaker's
+# AI-assisted features (heal, describe/improvise, explain, generate
+# accessors) - all of which work fine without one, just without those
+# specific commands.
 #
 # Two ways to run this:
 #   curl -fsSL https://raw.githubusercontent.com/sayandeep14/Cmaker/main/scripts/install.sh | bash
@@ -35,12 +37,21 @@ fail() { printf '\033[31m-- %s\033[0m\n' "$1" >&2; exit 1; }
 # ---------- 1. platform check ----------
 
 os="$(uname -s)"
-if [ "$os" != "Darwin" ]; then
-    fail "This installer currently only supports macOS (Linux/Windows support is planned - see ROADMAP.md §30). For now, see README.md's 'Install' section to build from source manually."
-fi
+case "$os" in
+    Darwin|Linux) ;;
+    *)
+        fail "This installer currently only supports macOS and Linux (Windows: see scripts/install.ps1). For now, see README.md's 'Install' section to build from source manually."
+        ;;
+esac
 
 arch="$(uname -m)"
-info "Detected macOS ($arch)"
+case "$arch" in
+    x86_64|amd64|arm64|aarch64) ;;
+    *)
+        fail "This installer only supports 64-bit systems (found architecture: $arch) - 32-bit is not implemented."
+        ;;
+esac
+info "Detected $os ($arch)"
 
 # ---------- 2. prerequisite: Go (needed to build cmaker itself) ----------
 
@@ -86,7 +97,10 @@ if [ -n "$repo_root" ]; then
     info "Building from local checkout ($repo_root)..."
 else
     info "Downloading cmaker source from GitHub..."
-    tmp_src="$(mktemp -d -t cmaker-src)"
+    # A bare "-t cmaker-src" template (no trailing X's) only works with
+    # BSD mktemp (macOS) - GNU mktemp (Linux) requires the X's explicitly,
+    # found the hard way testing this in a real Ubuntu container.
+    tmp_src="$(mktemp -d "${TMPDIR:-/tmp}/cmaker-src.XXXXXX")"
     cleanup_src="$tmp_src"
     if command -v git >/dev/null 2>&1 && git clone --depth 1 "$REPO_URL" "$tmp_src/cmaker" >/dev/null 2>&1; then
         repo_root="$tmp_src/cmaker"
@@ -107,7 +121,7 @@ cd "$repo_root"
 
 version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
 info "Building cmaker ($version)..."
-tmp_binary="$(mktemp -t cmaker-build)"
+tmp_binary="$(mktemp "${TMPDIR:-/tmp}/cmaker-build.XXXXXX")"
 go build -ldflags "-s -w -X main.version=$version" -o "$tmp_binary" .
 ok "Build succeeded"
 
@@ -145,9 +159,15 @@ case "$shell_name" in
         add_to_rc "$HOME/.zshrc"
         ;;
     bash)
-        # macOS Terminal.app launches login shells, which source
-        # .bash_profile (not .bashrc) - unlike most Linux distros.
-        add_to_rc "$HOME/.bash_profile"
+        if [ "$os" = "Darwin" ]; then
+            # macOS Terminal.app launches login shells, which source
+            # .bash_profile (not .bashrc) - unlike most Linux terminal
+            # emulators, which launch non-login interactive shells that
+            # source .bashrc instead.
+            add_to_rc "$HOME/.bash_profile"
+        else
+            add_to_rc "$HOME/.bashrc"
+        fi
         ;;
     fish)
         fish_config="$HOME/.config/fish/config.fish"
@@ -278,10 +298,12 @@ maybe_install_compiler() {
     fi
 }
 
-# maybe_install_rust is separate from maybe_install_brew_formula since the
-# standard way to install Rust is rustup (https://rustup.rs), not
-# Homebrew - it keeps cargo/rustc updatable via 'rustup update' the way
-# most Rust projects expect.
+# maybe_install_rust is separate from maybe_install_brew_formula/
+# maybe_install_apt_package since the standard way to install Rust on any
+# platform is rustup (https://rustup.rs), not a system package manager - it
+# keeps cargo/rustc updatable via 'rustup update' the way most Rust
+# projects expect. Identical on macOS and Linux, so it isn't split like the
+# other three checks below are.
 maybe_install_rust() {
     if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
         ok "cargo/rustc found"
@@ -303,12 +325,104 @@ maybe_install_rust() {
     fi
 }
 
+# ---- Linux (apt-based distros only - matches cmd/install.go's own
+# installSystemPackage support for opencv/boost/gtkmm §27; Fedora/Arch/etc.
+# aren't attempted, same scope cut as the rest of this codebase, just a
+# manual hint instead) ----
+
+apt_sudo=""
+apt_update_done=false
+
+# ensure_apt_updated runs 'apt-get update' at most once per script run
+# (cached in apt_update_done), right before the first package that actually
+# needs it - not unconditionally up front, since a run where every
+# prerequisite is already present shouldn't touch apt at all.
+ensure_apt_updated() {
+    if [ "$apt_update_done" = true ]; then
+        return
+    fi
+    apt_update_done=true
+    info "Updating apt package lists..."
+    $apt_sudo apt-get update -y
+}
+
+# maybe_install_apt_package is maybe_install_brew_formula's Linux
+# equivalent - checks for check_cmd and, if missing, offers to install it
+# via 'apt-get install -y package'. Unlike Homebrew (which refuses to run
+# as root by design), apt-get needs root - $apt_sudo is "" when this script
+# is already running as root (common in containers/CI) and "sudo"
+# otherwise, set once below before this function is first called.
+maybe_install_apt_package() {
+    display_name="$1"; check_cmd="$2"; package="$3"
+    if command -v "$check_cmd" >/dev/null 2>&1; then
+        ok "$display_name found"
+        return
+    fi
+    if ! command -v apt-get >/dev/null 2>&1; then
+        warn "$display_name not found (this installer only automates apt-based distros - install $package via your distro's package manager)"
+        return
+    fi
+    if confirm "$display_name not found - install via 'apt-get install -y $package' now?"; then
+        ensure_apt_updated
+        # DEBIAN_FRONTEND=noninteractive via env, not a bare env-var
+        # prefix - sudo resets the environment by default, so a plain
+        # "VAR=val sudo ..." prefix would only apply to sudo itself, not
+        # the apt-get it execs as root; wrapping in "env" makes it survive
+        # that hop. Needed because some packages pull in a dependency
+        # (tzdata, in testing) that otherwise prompts interactively via
+        # debconf and can eat stdin meant for this script's own prompts -
+        # a no-op on an already-configured desktop system, only matters on
+        # a fresh minimal install.
+        $apt_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$package"
+        ok "$display_name installed"
+    else
+        warn "Skipped - install later with: sudo apt-get install -y $package"
+    fi
+}
+
+# maybe_install_compiler_linux is maybe_install_compiler's Linux equivalent
+# - build-essential (apt) provides gcc/g++/make in one package, the
+# standard way to get a C/C++ toolchain on Debian/Ubuntu (no async-installer
+# complication like Xcode Command Line Tools has).
+maybe_install_compiler_linux() {
+    if command -v g++ >/dev/null 2>&1 || command -v clang++ >/dev/null 2>&1; then
+        ok "C/C++ compiler found"
+        return
+    fi
+    warn "No C/C++ compiler found (need g++ or clang++)."
+    if ! command -v apt-get >/dev/null 2>&1; then
+        warn "This installer only automates apt-based distros - install build-essential (or clang) via your distro's package manager."
+        return
+    fi
+    if confirm "Install build-essential (gcc/g++/make) via apt now?"; then
+        ensure_apt_updated
+        $apt_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential
+        ok "Compiler installed"
+    else
+        warn "Skipped - install later with: sudo apt-get install -y build-essential"
+    fi
+}
+
 echo ""
 info "Checking prerequisites..."
-maybe_install_brew_formula "cmake" "cmake" "cmake"
-maybe_install_compiler
-maybe_install_rust
-maybe_install_brew_formula "zig" "zig" "zig"
+if [ "$os" = "Darwin" ]; then
+    maybe_install_brew_formula "cmake" "cmake" "cmake"
+    maybe_install_compiler
+    maybe_install_rust
+    maybe_install_brew_formula "gdb" "gdb" "gdb"
+    maybe_install_brew_formula "zig" "zig" "zig"
+else
+    if [ "$(id -u)" -eq 0 ]; then apt_sudo=""; else apt_sudo="sudo"; fi
+    maybe_install_apt_package "cmake" "cmake" "cmake"
+    maybe_install_compiler_linux
+    maybe_install_rust
+    maybe_install_apt_package "gdb" "gdb" "gdb"
+    if command -v zig >/dev/null 2>&1; then
+        ok "zig found"
+    else
+        warn "zig not found (needed only for 'cmaker new --with-zig') - no automated install available for Linux; see https://ziglang.org/download/"
+    fi
+fi
 
 # ---------- 8. Anthropic API key ----------
 #

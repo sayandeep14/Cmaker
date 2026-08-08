@@ -256,23 +256,31 @@ func installFetchMessage(dep config.Dependency) string {
 // installSystemPackage shells out to whichever of entry.PackageManagers is
 // actually available on this machine (checked in a fixed preference order),
 // streaming the real install output to the terminal exactly like every
-// other cmaker command that shells out to a subprocess. Only brew (macOS)
-// and apt (Debian/Ubuntu) are supported today - vcpkg/choco (Windows) are a
-// documented, not-yet-implemented follow-up (§27).
+// other cmaker command that shells out to a subprocess. brew (macOS), apt
+// (Debian/Ubuntu), and pacman (Windows, via MSYS2 - see registry.Entry's own
+// PackageManagers doc for why it's pacman rather than choco/winget: ABI
+// compatibility with the MinGW-w64/UCRT compiler the Windows installer sets
+// up) are supported; vcpkg is still a documented, not-yet-implemented
+// follow-up (§27).
 func installSystemPackage(name string, packageManagers map[string]string) error {
 	type manager struct {
-		id      string
-		lookup  string   // binary to check via exec.LookPath
-		command []string // argv prefix, package name appended
+		id          string
+		lookup      string   // binary to check via exec.LookPath
+		command     []string // argv prefix, package name appended
+		windowsOnly bool     // never attempted outside GOOS=="windows", even if lookup happens to resolve (e.g. a real Arch Linux pacman)
 	}
 	managers := []manager{
 		{id: "brew", lookup: "brew", command: []string{"brew", "install"}},
 		{id: "apt", lookup: "apt-get", command: []string{"sudo", "apt-get", "install", "-y"}},
+		{id: "pacman", lookup: "pacman", command: []string{"pacman", "-S", "--noconfirm"}, windowsOnly: true},
 	}
 
 	for _, m := range managers {
 		pkg, ok := packageManagers[m.id]
 		if !ok {
+			continue
+		}
+		if m.windowsOnly && runtime.GOOS != "windows" {
 			continue
 		}
 		if _, err := exec.LookPath(m.lookup); err != nil {

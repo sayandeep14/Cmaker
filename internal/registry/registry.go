@@ -83,10 +83,15 @@ type Entry struct {
 	// "gtkmm-4.0") - see config.Dependency.PkgConfigModule.
 	PkgConfigModule string `yaml:"pkg_config_module,omitempty"`
 	// PackageManagers (system_package and pkg_config only) maps a
-	// package-manager id ("brew", "apt") to the package name that manager
-	// should install - cmaker install picks whichever manager is actually
-	// found on PATH, checked in a fixed preference order (see
-	// cmd/install.go).
+	// package-manager id ("brew", "apt", "pacman") to the package name that
+	// manager should install - cmaker install picks whichever manager is
+	// actually found on PATH, checked in a fixed preference order (see
+	// cmd/install.go). "pacman" is MSYS2's package manager on Windows
+	// specifically (mingw-w64-ucrt-x86_64-* packages, matching the
+	// MinGW-w64/UCRT compiler toolchain the Windows installer sets up) -
+	// only ever attempted on GOOS=="windows", never on a native Linux
+	// pacman (Arch etc.), since the mingw-w64-ucrt-x86_64- prefixed package
+	// names are MSYS2-specific and wouldn't resolve there.
 	PackageManagers map[string]string `yaml:"package_managers,omitempty"`
 
 	// ArchiveURLTemplate (prebuilt_archive only) is a download URL

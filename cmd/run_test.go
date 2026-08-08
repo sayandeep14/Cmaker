@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -114,5 +115,49 @@ func writeFileAt(t *testing.T, path string, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestShellQuote only exercises this platform's own branch of shellQuote -
+// runtime.GOOS is a compile-time constant, so the Windows branch can't be
+// reached by a test run on macOS/Linux CI. It's covered by code review
+// instead (see ROADMAP.md's Windows-support entry for the honesty note on
+// what could and couldn't be live-verified for this platform).
+func TestShellQuote(t *testing.T) {
+	got := shellQuote("it's a test")
+	want := "'it'\\''s a test'"
+	if runtime.GOOS == "windows" {
+		want = "'it''s a test'"
+	}
+	if got != want {
+		t.Errorf("shellQuote(%q) = %q, want %q", "it's a test", got, want)
+	}
+}
+
+func TestShellQuoteNoEmbeddedQuote(t *testing.T) {
+	if got := shellQuote("plain"); got != "'plain'" {
+		t.Errorf("shellQuote(%q) = %q, want %q", "plain", got, "'plain'")
+	}
+}
+
+func TestLoginShellCommandUsesShellEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("this platform's branch is exercised by TestLoginShellCommandWindows-equivalent logic on Windows CI, not here")
+	}
+	t.Setenv("SHELL", "/bin/zsh")
+	cmd := loginShellCommand("echo hi")
+	if len(cmd.Args) != 4 || cmd.Args[1] != "-i" || cmd.Args[2] != "-c" || cmd.Args[3] != "echo hi" {
+		t.Errorf("loginShellCommand() args = %v, want [.../zsh -i -c \"echo hi\"]", cmd.Args)
+	}
+}
+
+func TestLoginShellCommandDefaultsWhenShellUnset(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("only relevant to the $SHELL-based POSIX branch")
+	}
+	t.Setenv("SHELL", "")
+	cmd := loginShellCommand("echo hi")
+	if cmd.Args[0] != "/bin/sh" {
+		t.Errorf("loginShellCommand() with no $SHELL = %v, want it to default to /bin/sh", cmd.Args)
 	}
 }

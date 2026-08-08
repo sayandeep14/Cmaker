@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"cmaker/internal/config"
@@ -91,6 +94,37 @@ func TestResolveInstallChainMissingRequiredEntry(t *testing.T) {
 
 	if _, err := resolveInstallChain(orphan, config.Config{}); err == nil {
 		t.Error("resolveInstallChain() with a 'requires' entry missing from the registry: expected an error, got nil")
+	}
+}
+
+// TestInstallSystemPackagePacmanNeverAttemptedOffWindows is the one part of
+// installSystemPackage's pacman branch that's actually testable from
+// macOS/Linux CI (runtime.GOOS is a compile-time constant, so the "windows"
+// success path itself can't be exercised here - see ROADMAP.md's Windows-
+// support entry). It stubs a fake "pacman" on PATH that would create a
+// sentinel file if actually invoked, and confirms installSystemPackage
+// never calls it on this platform even though it's resolvable via
+// exec.LookPath - proving the windowsOnly gate isn't just "hope GOOS
+// matches", it actually skips the manager entirely.
+func TestInstallSystemPackagePacmanNeverAttemptedOffWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("this test specifically verifies pacman is skipped OFF windows")
+	}
+
+	fakeBin := t.TempDir()
+	sentinel := filepath.Join(fakeBin, "pacman-was-invoked")
+	script := "#!/bin/sh\ntouch " + sentinel + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "pacman"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := installSystemPackage("testpkg", map[string]string{"pacman": "mingw-w64-ucrt-x86_64-testpkg"})
+	if err == nil {
+		t.Error("installSystemPackage() with only a pacman entry, off Windows: expected an error (no manager should be attempted), got nil")
+	}
+	if _, statErr := os.Stat(sentinel); statErr == nil {
+		t.Error("installSystemPackage() invoked the stub pacman despite not running on Windows")
 	}
 }
 
