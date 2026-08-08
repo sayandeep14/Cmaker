@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -9,6 +10,7 @@ import (
 
 	"cmaker/internal/cmake"
 	"cmaker/internal/config"
+	"cmaker/internal/llm"
 	"cmaker/internal/registry"
 )
 
@@ -65,11 +67,16 @@ var doctorCmd = &cobra.Command{
 	Short: "Check the local toolchain for cmake/compiler/build-system availability",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runDoctor()
+		checkAI, _ := cmd.Flags().GetBool("ai")
+		return runDoctor(checkAI)
 	},
 }
 
-func runDoctor() error {
+func init() {
+	doctorCmd.Flags().Bool("ai", false, "also test the configured Anthropic API key with a real request")
+}
+
+func runDoctor(checkAI bool) error {
 	fmt.Printf("🩺 OS: %s\n", runtime.GOOS)
 
 	missingRequired := false
@@ -151,11 +158,39 @@ func runDoctor() error {
 		}
 	}
 
+	if checkAI {
+		reportAIStatus()
+	}
+
 	if missingRequired {
 		return fmt.Errorf("one or more required tools are missing")
 	}
 	okf("All required tools are ready.")
 	return nil
+}
+
+// reportAIStatus checks whether cmaker's AI-assisted features (heal,
+// describe/improvise, explain, generate accessors) are actually usable -
+// opt-in via --ai since, unlike every other doctor check, this makes a
+// real network call to Anthropic (and spends a trivial amount of real API
+// usage - see Client.TestConnection). Deliberately never contributes to
+// missingRequired/doctor's exit code: AI features are meant to degrade
+// gracefully when unconfigured, not block "cmaker is installed and
+// usable for its core job."
+func reportAIStatus() {
+	fmt.Println(colorize(ansiBold, "AI-assisted features (heal/describe/explain/generate accessors):"))
+	client, err := llm.NewClientFromEnv("")
+	if err != nil {
+		fmt.Printf("  -- ANTHROPIC_API_KEY: %s\n", colorize(ansiYellow, "Not configured"))
+		fmt.Printf("       %v\n", err)
+		return
+	}
+	if err := client.TestConnection(context.Background()); err != nil {
+		fmt.Printf("  -- ANTHROPIC_API_KEY: %s\n", colorize(ansiYellow, "Configured but not working"))
+		fmt.Printf("       %v\n", err)
+		return
+	}
+	fmt.Printf("  -- ANTHROPIC_API_KEY: %s\n", colorize(ansiGreen, "Ready"))
 }
 
 // reportSystemPackages extends 'cmaker doctor' to cover §27's

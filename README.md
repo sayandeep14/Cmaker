@@ -54,24 +54,75 @@ Hello from Cmaker!
 - [Command reference](#command-reference)
 - [Project layout cmaker creates](#project-layout-cmaker-creates)
 - [Contributing / roadmap](#contributing--roadmap)
+- [License](#license)
 
 ---
 
 ## Install
 
-**From source** (until prebuilt releases exist — see `ROADMAP.md` §8):
+**macOS — one line, no manual clone needed:**
 
 ```bash
-git clone https://github.com/<you>/cmaker.git
-cd cmaker
+curl -fsSL https://raw.githubusercontent.com/sayandeep14/Cmaker/main/scripts/install.sh | bash
+```
+
+This downloads cmaker's source straight from GitHub (via `git clone` if
+`git` is available, falling back to a plain source tarball otherwise — no
+prebuilt release exists yet, see `ROADMAP.md` §8, so this still builds
+locally with the Go toolchain rather than downloading a binary) and runs
+the same guided installer described below. Nothing is cloned into your
+current directory — it all happens in a temp directory that's cleaned up
+automatically.
+
+Already have this repo cloned? Run the installer directly instead — it
+builds from whatever's in your working tree (including uncommitted local
+changes), rather than fetching a fresh copy from GitHub:
+
+```bash
+./scripts/install.sh
+```
+
+Either way, this is the guided installer: it checks that Go 1.25+ is
+available (needed to build cmaker itself — there's no prebuilt release
+yet), builds cmaker, installs it to `~/.cmaker/bin` (no `sudo` needed), and
+adds that directory to `PATH` in your shell's rc file.
+
+It then checks for `cmake`, a C/C++ compiler, `cargo`/`rustc`, and `zig` —
+everything a cmaker project can need, whether or not you actually use
+`--with-rust`/`--with-zig` — and **offers to install whichever are
+missing**, each with its own `[y/N]` confirmation (nothing runs without you
+saying yes to that specific tool): `cmake`/`zig` via Homebrew (offering to
+install Homebrew itself first if it isn't found), a compiler via Xcode
+Command Line Tools, and Rust via `rustup`. Declining any of them is fine —
+cmaker still installs and works, just prints the manual install hint
+instead (same as plain `cmaker doctor` always has).
+
+Finally it optionally collects an Anthropic API key for the AI-assisted
+commands (`heal`, `describe`, `explain`, `generate accessors`) and saves it
+to `~/.cmaker/env`, then **tests that key with a real request** and tells
+you plainly if it didn't work — cmaker itself is still fully installed and
+usable either way, just without those specific AI features until the key is
+fixed. Safe to re-run: it won't duplicate the `PATH` line, won't re-ask
+about a tool it already found, and re-running with an empty answer at the
+key prompt keeps whatever key you saved before. Linux and Windows support
+is planned — see `ROADMAP.md` §30.
+
+**Uninstalling:** remove `~/.cmaker` (binary, saved API key) and delete the
+`# Added by the cmaker installer` block from your shell rc file
+(`~/.zshrc`/`~/.bash_profile`/`~/.config/fish/config.fish`).
+
+**Everyone else, or if you'd rather do it by hand:**
+
+```bash
 make install   # builds ./cmaker and installs it to /usr/local/bin (sudo)
 ```
 
-`make install` is also the command to re-run after pulling or making local
-changes — it rebuilds from the current working tree and overwrites whatever
-`cmaker` is currently on `PATH`, so the installed binary never silently
-drifts out of sync with the source (the version it reports is derived from
-`git describe`, so `cmaker --version` tells you exactly what's installed).
+`make install` is also the command repo developers should re-run after
+pulling or making local changes — it rebuilds from the current working tree
+and overwrites whatever `cmaker` is currently on `PATH`, so the installed
+binary never silently drifts out of sync with the source (the version it
+reports is derived from `git describe`, so `cmaker --version` tells you
+exactly what's installed).
 
 Prefer not to install system-wide, or don't have `sudo`? `make build`
 just builds `./cmaker` in the repo without touching `PATH`:
@@ -85,7 +136,18 @@ go build -o cmaker .
 
 **Requirements to use cmaker on a project:** `cmake` and a C/C++ compiler
 (clang or gcc) at minimum. Run `cmaker doctor` any time to check what's
-installed and get install hints for what's missing.
+installed and get install hints for what's missing — add `--ai` to also
+test whether your `ANTHROPIC_API_KEY` (however it's set — see below) is
+actually working.
+
+**The Anthropic API key** (optional — only needed for `heal`/`describe`/
+`explain`/`generate accessors`) is resolved in this priority order:
+1. The `ANTHROPIC_API_KEY` environment variable, if set.
+2. `~/.cmaker/env`, if the installer (or you, by hand) saved one there.
+
+Setting the environment variable always overrides a saved one for that
+session — handy for temporarily using a different key without touching the
+saved one.
 
 ---
 
@@ -1345,7 +1407,7 @@ Rebuilds and reruns automatically whenever files in `src/`, `include/`, or
 </details>
 
 <details>
-<summary><code>cmaker doctor</code></summary>
+<summary><code>cmaker doctor [flags]</code></summary>
 
 Checks `cmake`/`make`/`ninja`/`clang++`/`g++`/`vcpkg`/`conan`/`ccache`/
 `sccache`/`clang-format`/`clang-tidy`/`gcovr`/`doxygen`, lists every
@@ -1354,6 +1416,12 @@ wired in, reports which `system_package`-kind registry entries (see
 [above](#beyond-cpm-system-packages-and-prebuilt-sdks)) are already
 installed, and — only if your project's `cmaker.yaml` declares it needs
 them — checks `cargo`/`rustc`/`zig` too.
+
+- `--ai` — also test whether `ANTHROPIC_API_KEY` (env var or
+  `~/.cmaker/env`, see [above](#install)) is valid, with a real request to
+  the Anthropic API. Never affects `doctor`'s exit code — AI-assisted
+  commands are meant to degrade gracefully when unconfigured, not block
+  "cmaker is installed and usable."
 </details>
 
 <details>
@@ -1562,3 +1630,7 @@ typed Rust `cxx` bridge, ML backend templates beyond Eigen, `--backend`/
 `--ml` domain scaffolds, real published Homebrew/goreleaser releases — see
 `PUBLISHING.md` for that last one). Check there before assuming something
 is or isn't supported.
+
+## License
+
+[MIT](LICENSE)

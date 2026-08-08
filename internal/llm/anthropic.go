@@ -52,7 +52,17 @@ type Client struct {
 func NewClientFromEnv(model string) (*Client, error) {
 	key := os.Getenv("ANTHROPIC_API_KEY")
 	if key == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY is not set - this command needs an Anthropic API key (get one at https://console.anthropic.com/)")
+		// The env var always wins when set; this is only a fallback for
+		// anyone who saved a key via the installer (scripts/install.sh)
+		// instead of exporting it themselves - see SaveAPIKey.
+		stored, err := resolveStoredAPIKey()
+		if err != nil {
+			return nil, err
+		}
+		key = stored
+	}
+	if key == "" {
+		return nil, fmt.Errorf("ANTHROPIC_API_KEY is not set - this command needs an Anthropic API key (get one at https://console.anthropic.com/; re-run the cmaker installer to save one, or set the environment variable yourself)")
 	}
 	if model == "" {
 		model = DefaultModel
@@ -134,4 +144,15 @@ func (c *Client) Complete(ctx context.Context, system, user string) (string, err
 		}
 	}
 	return text.String(), nil
+}
+
+// TestConnection sends a minimal request to confirm the API key is valid
+// and the Anthropic API is reachable - used by 'cmaker doctor --ai' and
+// the installer's post-install verification step. Complete's own
+// MaxTokens cap doesn't need lowering for this to stay cheap: Anthropic
+// bills the actual output produced, not the cap, and a "reply with one
+// word" prompt naturally stops after a few tokens.
+func (c *Client) TestConnection(ctx context.Context) error {
+	_, err := c.Complete(ctx, "", "Reply with just the word OK.")
+	return err
 }
