@@ -34,16 +34,98 @@ const (
 	SourceUser    Source = "user (~/.cmaker/registry.yaml)"
 )
 
-// Entry describes one registry-listed library.
+// Kind mirrors config.DependencyKind (§27) - kept as its own type rather
+// than importing config.DependencyKind directly, matching Entry.ToDependency
+// already being the one place this package talks to package config, so a
+// registry.yaml author never needs to know config's Go types exist.
+type Kind string
+
+const (
+	KindCPM             Kind = ""                 // the original, still-default shape - repo/default_tag/CPMAddPackage
+	KindSystemPackage   Kind = "system_package"   // installed via the machine's package manager, wired in via find_package
+	KindPrebuiltArchive Kind = "prebuilt_archive" // a platform-matched prebuilt binary release, downloaded+extracted at configure time
+	KindPkgConfig       Kind = "pkg_config"       // installed via the machine's package manager, wired in via pkg-config (for libraries with no CMake package config at all - confirmed live: GTK/GTKmm)
+)
+
+// Entry describes one registry-listed library. Which fields apply depends
+// on Kind - see config.DependencyKind's doc for what each shape actually
+// does at configure time; this struct just carries the same data through
+// registry.yaml/entries.yaml.
 type Entry struct {
 	Name       string   `yaml:"name"`
-	Repo       string   `yaml:"repo"`
-	DefaultTag string   `yaml:"default_tag"`
+	Kind       Kind     `yaml:"kind,omitempty"`
+	Repo       string   `yaml:"repo,omitempty"`        // cpm only
+	DefaultTag string   `yaml:"default_tag,omitempty"` // cpm only
 	Link       []string `yaml:"link"`
-	Options    []string `yaml:"options,omitempty"`
+	Options    []string `yaml:"options,omitempty"` // cpm only
 	Notes      string   `yaml:"notes"`
 
+	// DownloadOnly (cpm only) - see config.Dependency.DownloadOnly. Used
+	// together with PostFetchExtra when the library's own CMakeLists.txt
+	// (if it even has one) isn't meant to be add_subdirectory'd directly
+	// (e.g. eigen, imgui - see their template's own meta.yaml for the
+	// same pattern this mirrors).
+	DownloadOnly bool `yaml:"download_only,omitempty"`
+	// PostFetchExtra (cpm only) - see config.Dependency.PostFetchExtra.
+	PostFetchExtra string `yaml:"post_fetch_extra,omitempty"`
+	// Requires names other registry entries that must be installed first
+	// (in order, before this one) for this entry to actually work - e.g.
+	// crow requires asio (Crow's own CMakeLists.txt calls
+	// find_package(asio REQUIRED) with no fetch mechanism of its own),
+	// imgui requires glfw (imgui's hand-built target links against it).
+	// cmd/install.go resolves this transitively, skipping anything
+	// already present in cmaker.yaml rather than erroring on it.
+	Requires []string `yaml:"requires,omitempty"`
+
+	// FindPackage (system_package only) is the CMake find_package() name.
+	FindPackage string `yaml:"find_package,omitempty"`
+	// PkgConfigModule (pkg_config only) is the .pc module name (e.g.
+	// "gtkmm-4.0") - see config.Dependency.PkgConfigModule.
+	PkgConfigModule string `yaml:"pkg_config_module,omitempty"`
+	// PackageManagers (system_package and pkg_config only) maps a
+	// package-manager id ("brew", "apt") to the package name that manager
+	// should install - cmaker install picks whichever manager is actually
+	// found on PATH, checked in a fixed preference order (see
+	// cmd/install.go).
+	PackageManagers map[string]string `yaml:"package_managers,omitempty"`
+
+	// ArchiveURLTemplate (prebuilt_archive only) is a download URL
+	// containing a "{platform}" placeholder, resolved against
+	// PlatformNames (below) for the current GOOS/GOARCH before it's ever
+	// written to cmaker.yaml.
+	ArchiveURLTemplate string `yaml:"archive_url_template,omitempty"`
+	// PlatformNames (prebuilt_archive only) maps "<GOOS>/<GOARCH>" (e.g.
+	// "darwin/arm64") to whatever platform token that vendor's own release
+	// asset naming uses (e.g. "osx-arm64") - every vendor names these
+	// differently, so this has to be data, not a hardcoded Go mapping.
+	PlatformNames     map[string]string `yaml:"platform_names,omitempty"`
+	ArchiveIncludeDir string            `yaml:"archive_include_dir,omitempty"` // prebuilt_archive only
+	ArchiveLibDir     string            `yaml:"archive_lib_dir,omitempty"`     // prebuilt_archive only
+
 	Source Source `yaml:"-"` // set by the loader, never read from registry.yaml itself
+}
+
+// ResolveArchiveURL substitutes "{platform}" in ArchiveURLTemplate using
+// PlatformNames for goos/goarch (normally runtime.GOOS/runtime.GOARCH -
+// passed in rather than read directly so this stays unit-testable across
+// platforms). Returns an error naming exactly which platform is
+// unsupported, rather than silently producing a broken URL.
+func (e Entry) ResolveArchiveURL(goos, goarch string) (string, error) {
+	key := goos + "/" + goarch
+	platform, ok := e.PlatformNames[key]
+	if !ok {
+		return "", fmt.Errorf("%q has no known prebuilt archive for %s - supported: %s", e.Name, key, strings.Join(sortedKeys(e.PlatformNames), ", "))
+	}
+	return strings.ReplaceAll(e.ArchiveURLTemplate, "{platform}", platform), nil
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // builtInEntries is parsed once at package init - the embedded content
@@ -160,15 +242,64 @@ func CloseMatches(name string) []string {
 	return matches
 }
 
-// ToDependency converts a registry entry into a config.Dependency, ready to
-// append to cmaker.yaml's dependencies: list.
+// ToDependency converts a cpm or system_package registry entry into a
+// config.Dependency, ready to append to cmaker.yaml's dependencies: list.
+// Both kinds need no extra runtime info to convert - a system_package
+// entry's actual package-manager install is expected to have already run
+// (see cmd/install.go) before this is called, same as a cpm entry's actual
+// fetch doesn't happen until the next `cmake` configure either way.
+//
+// A prebuilt_archive entry can't be converted this way - its ArchiveURL
+// needs the current platform resolved first (ResolveArchiveURL), which
+// this method deliberately doesn't do implicitly; use ToDependencyForArchive
+// with the already-resolved URL instead. Calling this on a prebuilt_archive
+// entry is a caller bug, not a runtime condition - it panics rather than
+// silently producing a Dependency with no ArchiveURL.
 func (e Entry) ToDependency() config.Dependency {
+	switch e.Kind {
+	case KindSystemPackage:
+		return config.Dependency{
+			Name:        e.Name,
+			Kind:        config.DependencyKindSystemPackage,
+			FindPackage: e.FindPackage,
+			Link:        e.Link,
+		}
+	case KindPkgConfig:
+		return config.Dependency{
+			Name:            e.Name,
+			Kind:            config.DependencyKindPkgConfig,
+			PkgConfigModule: e.PkgConfigModule,
+			Link:            e.Link,
+		}
+	case KindPrebuiltArchive:
+		panic("registry: ToDependency called on a prebuilt_archive entry - use ToDependencyForArchive with a ResolveArchiveURL result instead")
+	default:
+		return config.Dependency{
+			Name:           e.Name,
+			Kind:           config.DependencyKindCPM,
+			Repo:           e.Repo,
+			Tag:            e.DefaultTag,
+			Link:           e.Link,
+			Options:        e.Options,
+			DownloadOnly:   e.DownloadOnly,
+			PostFetchExtra: e.PostFetchExtra,
+		}
+	}
+}
+
+// ToDependencyForArchive converts a prebuilt_archive registry entry into a
+// config.Dependency using resolvedURL (see ResolveArchiveURL) - kept
+// separate from ToDependency because resolving the URL requires the
+// caller's own GOOS/GOARCH, which this package deliberately doesn't read
+// directly (see ResolveArchiveURL's own doc).
+func (e Entry) ToDependencyForArchive(resolvedURL string) config.Dependency {
 	return config.Dependency{
-		Name:    e.Name,
-		Repo:    e.Repo,
-		Tag:     e.DefaultTag,
-		Link:    e.Link,
-		Options: e.Options,
+		Name:              e.Name,
+		Kind:              config.DependencyKindPrebuiltArchive,
+		ArchiveURL:        resolvedURL,
+		ArchiveIncludeDir: e.ArchiveIncludeDir,
+		ArchiveLibDir:     e.ArchiveLibDir,
+		Link:              e.Link,
 	}
 }
 

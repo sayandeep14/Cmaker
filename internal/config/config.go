@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -88,16 +90,151 @@ type TestingConfig struct {
 	Enabled bool `yaml:"enabled"`
 }
 
-// Dependency describes a third-party library fetched automatically at
-// configure time via CPM.cmake, instead of assuming it's already installed
-// system-wide.
+// DependencyKind selects how a Dependency is acquired and wired into the
+// generated CMakeLists.txt (§27). "" (the zero value) means DependencyKindCPM
+// - every dependency before §27 was implicitly this shape, so an existing
+// cmaker.yaml with no 'kind:' field keeps working unchanged.
+type DependencyKind string
+
+const (
+	// DependencyKindCPM fetches Repo@Tag via CPMAddPackage - the original,
+	// still-default shape (fmt, nlohmann-json, raylib, ...).
+	DependencyKindCPM DependencyKind = "cpm"
+	// DependencyKindSystemPackage shells out to the machine's own package
+	// manager (Homebrew on macOS, apt on Debian/Ubuntu) to install a
+	// system package, then wires it in via find_package(FindPackage
+	// REQUIRED) instead of fetching source - for libraries realistically
+	// installed system-wide rather than built from source most days
+	// (OpenCV is the first real example; Boost is the same shape).
+	DependencyKindSystemPackage DependencyKind = "system_package"
+	// DependencyKindPrebuiltArchive downloads and extracts a
+	// platform-matched prebuilt binary release archive at configure time
+	// (via CMake's own file(DOWNLOAD)/file(ARCHIVE_EXTRACT), no external
+	// tooling needed) and wires it in as a manually-constructed imported
+	// target from the extracted include/lib directories - for SDKs
+	// distributed as prebuilt binaries with no buildable-from-source CMake
+	// project at all (ONNX Runtime's official releases are the first real
+	// example; libtorch/TensorFlow's C API are the same shape).
+	DependencyKindPrebuiltArchive DependencyKind = "prebuilt_archive"
+	// DependencyKindPkgConfig shells out to the machine's own package
+	// manager first, same as DependencyKindSystemPackage, but wires the
+	// result in via pkg-config (find_package(PkgConfig) +
+	// pkg_check_modules(... IMPORTED_TARGET ...)) instead of CMake's own
+	// find_package(<name>) - for libraries that only ship a pkg-config
+	// .pc file and no CMake package config at all (confirmed live: GTK/
+	// GTKmm's real Homebrew formula ships gtkmm-4.0.pc and nothing
+	// CMake-shaped whatsoever). The resulting CMake target is always
+	// PkgConfig::<PKGCONFIGVAR>(see PkgConfigVar's own doc) - never
+	// find_package's more familiar Namespace::target shape, since
+	// pkg_check_modules doesn't know the upstream project's own naming
+	// conventions the way a real CMake config package would.
+	DependencyKindPkgConfig DependencyKind = "pkg_config"
+)
+
+// KindOrDefault returns kind with the DependencyKindCPM default applied,
+// since the field is omitted (empty string) on every dependency written
+// before §27 - this keeps old cmaker.yaml files working unchanged.
+func (d Dependency) KindOrDefault() DependencyKind {
+	if d.Kind == "" {
+		return DependencyKindCPM
+	}
+	return d.Kind
+}
+
+// ResolveArchiveURLTemplate resolves d's ArchiveURLTemplate/PlatformNames
+// (see their own doc) against goos/goarch (normally runtime.GOOS/
+// runtime.GOARCH, passed in rather than read directly so this stays
+// unit-testable across platforms) into a concrete ArchiveURL, clearing the
+// template fields - mirrors registry.Entry.ResolveArchiveURL for a
+// template's own prebuilt_archive dependency (see cmd/new.go). A no-op,
+// returning d unchanged, if d has no ArchiveURLTemplate at all.
+func (d Dependency) ResolveArchiveURLTemplate(goos, goarch string) (Dependency, error) {
+	if d.ArchiveURLTemplate == "" {
+		return d, nil
+	}
+	key := goos + "/" + goarch
+	platform, ok := d.PlatformNames[key]
+	if !ok {
+		keys := make([]string, 0, len(d.PlatformNames))
+		for k := range d.PlatformNames {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return Dependency{}, fmt.Errorf("%q has no known prebuilt archive for %s - supported: %s", d.Name, key, strings.Join(keys, ", "))
+	}
+	d.ArchiveURL = strings.ReplaceAll(d.ArchiveURLTemplate, "{platform}", platform)
+	d.ArchiveURLTemplate = ""
+	d.PlatformNames = nil
+	return d, nil
+}
+
+// Dependency describes a third-party library wired into the generated
+// CMakeLists.txt - by default fetched automatically at configure time via
+// CPM.cmake (Kind == DependencyKindCPM, instead of assuming it's already
+// installed system-wide), or (§27) acquired a different way entirely per
+// Kind.
 type Dependency struct {
-	Name         string   `yaml:"name"`
-	Repo         string   `yaml:"repo"` // "owner/repo" GitHub shorthand, or a full git URL (e.g. gitlab) for GIT_REPOSITORY
-	Tag          string   `yaml:"tag"`
-	Link         []string `yaml:"link"`                    // targets to pass to target_link_libraries
-	Options      []string `yaml:"options"`                 // optional CPMAddPackage OPTIONS lines
-	DownloadOnly bool     `yaml:"download_only,omitempty"` // CPM DOWNLOAD_ONLY YES - fetch source but don't add_subdirectory it; used when the dep's own CMakeLists.txt isn't meant to be consumed directly (e.g. Eigen), pairing with a cmake_extra block that wires up the include dir manually
+	Name         string         `yaml:"name"`
+	Kind         DependencyKind `yaml:"kind,omitempty"`          // "" == DependencyKindCPM; see DependencyKind's own doc for the other shapes
+	Repo         string         `yaml:"repo,omitempty"`          // cpm only: "owner/repo" GitHub shorthand, or a full git URL (e.g. gitlab) for GIT_REPOSITORY
+	Tag          string         `yaml:"tag,omitempty"`           // cpm only
+	Link         []string       `yaml:"link"`                    // targets to pass to target_link_libraries - used by every kind
+	Options      []string       `yaml:"options,omitempty"`       // cpm only: optional CPMAddPackage OPTIONS lines
+	DownloadOnly bool           `yaml:"download_only,omitempty"` // cpm only: CPM DOWNLOAD_ONLY YES - fetch source but don't add_subdirectory it; used when the dep's own CMakeLists.txt isn't meant to be consumed directly (e.g. Eigen), pairing with a cmake_extra block that wires up the include dir manually
+	// PostFetchExtra is raw CMake emitted immediately after this
+	// dependency's CPMAddPackage() call, before the next dependency's -
+	// unlike cmake_extra (which only runs once, after every dependency has
+	// already been fetched), this exists for the rarer case where a later
+	// dependency's own CMakeLists.txt does a find_package() during ITS
+	// fetch that needs a variable set from an earlier dependency's fetch
+	// result first (see the crow template's asio/ASIO_INCLUDE_DIR).
+	PostFetchExtra string `yaml:"post_fetch_extra,omitempty"`
+
+	// FindPackage is the system_package kind's CMake package name -
+	// emitted as find_package(<FindPackage> REQUIRED) instead of a
+	// CPMAddPackage call, after the package manager install step below has
+	// actually run.
+	FindPackage string `yaml:"find_package,omitempty"`
+	// PkgConfigModule is the pkg_config kind's .pc module name (e.g.
+	// "gtkmm-4.0") - emitted as pkg_check_modules(<VAR> REQUIRED
+	// IMPORTED_TARGET <PkgConfigModule>), for libraries that only ship a
+	// pkg-config file and no CMake package config at all.
+	PkgConfigModule string `yaml:"pkg_config_module,omitempty"`
+	// PackageManagers (system_package and pkg_config only) maps a
+	// package-manager id ("brew", "apt") to the package name that manager
+	// should install - both `cmaker install <name>` (a registry entry)
+	// and `cmaker new --template=<name>` (a template's own meta.yaml
+	// declaring this shape directly) run this exact install step before
+	// anything that needs the result (a configure, or writing
+	// cmaker.yaml) - see installSystemPackage in cmd/, shared by both
+	// paths.
+	PackageManagers map[string]string `yaml:"package_managers,omitempty"`
+
+	// ArchiveURL (prebuilt_archive only) is the exact download URL for
+	// this machine's platform/variant, already resolved by the caller
+	// (registry.Entry.ResolveArchiveURL, or ResolveArchiveURLTemplate for
+	// a template's own dependency - see cmd/new.go) before this
+	// Dependency is ever written to cmaker.yaml - Generate itself does no
+	// platform detection, it just downloads and extracts whatever URL
+	// it's given.
+	ArchiveURL string `yaml:"archive_url,omitempty"`
+	// ArchiveURLTemplate/PlatformNames (prebuilt_archive only, template
+	// authoring time only) mirror registry.Entry's own fields of the same
+	// name - a template's meta.yaml declares a dependency this shape when
+	// it wants a platform-matched prebuilt archive (e.g. the onnxruntime
+	// template), and cmd/new.go resolves it to a concrete ArchiveURL via
+	// ResolveArchiveURLTemplate before ever writing cmaker.yaml, the same
+	// way cmd/install.go resolves a registry entry's own template. Once
+	// resolved, these two fields are cleared - only ArchiveURL is ever
+	// actually written to a real cmaker.yaml.
+	ArchiveURLTemplate string            `yaml:"archive_url_template,omitempty"`
+	PlatformNames      map[string]string `yaml:"platform_names,omitempty"`
+	// ArchiveIncludeDir/ArchiveLibDir (prebuilt_archive only) are paths
+	// relative to the extracted archive's own top-level directory (whose
+	// name varies per release, so Generate discovers it at configure time
+	// via a glob rather than assuming it matches the archive filename).
+	ArchiveIncludeDir string `yaml:"archive_include_dir,omitempty"`
+	ArchiveLibDir     string `yaml:"archive_lib_dir,omitempty"`
 }
 
 // ValidLanguages is the set of values `language:` may take (including the

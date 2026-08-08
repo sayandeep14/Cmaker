@@ -280,7 +280,8 @@ func TestIntegrationDescribeScaffoldBuildRun(t *testing.T) {
 
 	dir := t.TempDir()
 	root := filepath.Join(dir, "described")
-	if err := runDescribeAndScaffold(root, "described", "a REST API backend that returns JSON, written in C++", "", ""); err != nil {
+	opts := describeOptions{Root: root, Name: "described", Description: "a REST API backend that returns JSON, written in C++"}
+	if err := runDescribeAndScaffold(opts); err != nil {
 		t.Fatalf("runDescribeAndScaffold() error = %v", err)
 	}
 
@@ -324,12 +325,15 @@ int main() { std::cout << "only-test-ok\n"; return 0; }
 		t.Fatal(err)
 	}
 
-	binPath, err := compileOnly(config.Config{CppVersion: 17, Executable: "main", IncludeDirs: nil}, srcPath)
+	bins, err := compileOnly(config.Config{CppVersion: 17, Executable: "main", IncludeDirs: nil}, srcPath)
 	if err != nil {
 		t.Fatalf("compileOnly() error = %v", err)
 	}
+	if len(bins) != 1 {
+		t.Fatalf("compileOnly() = %v, want exactly 1 binary for a single-file pattern", bins)
+	}
 
-	out, err := exec.Command(binPath).CombinedOutput()
+	out, err := exec.Command(bins[0]).CombinedOutput()
 	if err != nil {
 		t.Fatalf("running compiled scratch binary failed: %v\n%s", err, out)
 	}

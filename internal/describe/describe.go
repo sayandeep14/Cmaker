@@ -70,9 +70,8 @@ func Describe(ctx context.Context, completer Completer, description string) (Pla
 		return Plan{}, fmt.Errorf("LLM request failed: %w", err)
 	}
 
-	jsonText := stripCodeFences(raw)
 	var resp planResponse
-	if err := json.Unmarshal([]byte(jsonText), &resp); err != nil {
+	if err := decodeFirstJSONValue(raw, &resp); err != nil {
 		return Plan{}, fmt.Errorf("could not parse LLM response as JSON: %w\n--- raw response ---\n%s", err, raw)
 	}
 
@@ -175,18 +174,31 @@ Rules:
 // since models frequently wrap JSON output in one even when explicitly
 // told not to - the same real, observed-live quirk internal/codegen and
 // internal/heal both already had to defend against.
-func stripCodeFences(s string) string {
+func stripLeadingCodeFence(s string) string {
 	s = strings.TrimSpace(s)
 	if !strings.HasPrefix(s, "```") {
 		return s
 	}
-	lines := strings.Split(s, "\n")
-	if len(lines) < 2 {
+	_, rest, found := strings.Cut(s, "\n")
+	if !found {
 		return s
 	}
-	lines = lines[1:]
-	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
-		lines = lines[:len(lines)-1]
-	}
-	return strings.TrimSpace(strings.Join(lines, "\n"))
+	return strings.TrimSpace(rest)
+}
+
+// decodeFirstJSONValue strips a leading markdown code fence (if any) and
+// decodes only the *first* JSON value from what's left into v, via
+// json.Decoder rather than json.Unmarshal.
+//
+// This distinction is load-bearing, not stylistic: json.Unmarshal requires
+// the entire input to be exactly one JSON value with nothing else, so it
+// fails outright the moment a model appends explanatory prose after a
+// closing ``` fence - a real, live-observed quirk (see internal/improvise,
+// which shares this exact helper's reasoning after live testing caught
+// claude-haiku-4-5 doing exactly this for its own JSON response).
+// json.Decoder.Decode reads and parses just the first complete JSON value
+// from the stream and stops, tolerating whatever comes after.
+func decodeFirstJSONValue(raw string, v any) error {
+	s := stripLeadingCodeFence(raw)
+	return json.NewDecoder(strings.NewReader(s)).Decode(v)
 }

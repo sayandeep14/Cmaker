@@ -5,20 +5,62 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"cmaker/internal/config"
 )
 
-// compileOnly ad hoc-compiles a single source file into
+// resolveOnlyFiles expands pattern (a plain path or a glob like
+// 'tests/*.cpp') into the list of source files it matches, sorted for
+// deterministic ordering. filepath.Glob handles a plain literal path with
+// no metacharacters the same way - it just checks existence - so this is
+// the single resolution path for both '--only=file.cpp' and
+// '--only=tests/*.cpp'.
+func resolveOnlyFiles(pattern string) ([]string, error) {
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("--only: invalid pattern %q: %w", pattern, err)
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("--only: no files match %q", pattern)
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+// compileOnly ad hoc-compiles every file matching pattern (a plain path or
+// a glob like 'tests/*.cpp') into its own binary under
 // build/.cmaker_scratch/<name>, without touching the main project's
 // CMakeLists.txt or build tree - for scratch files and isolated experiments
-// that shouldn't be wired into the main executable target.
+// that shouldn't be wired into the main executable target. Each matched
+// file is compiled independently and must be self-contained with its own
+// main() - this never links multiple matched files together into one
+// binary, since each is expected to already have one.
+func compileOnly(cfg config.Config, pattern string) ([]string, error) {
+	files, err := resolveOnlyFiles(pattern)
+	if err != nil {
+		return nil, err
+	}
+	bins := make([]string, 0, len(files))
+	for _, file := range files {
+		bin, err := compileOneFile(cfg, file)
+		if err != nil {
+			return nil, err
+		}
+		bins = append(bins, bin)
+	}
+	return bins, nil
+}
+
+// compileOneFile ad hoc-compiles a single source file into
+// build/.cmaker_scratch/<name> - see compileOnly, which this is a helper
+// for.
 //
 // Known limitation: the file is compiled standalone (project include dirs
 // only, no linked libraries/dependencies) - it must be self-contained with
-// its own main(). Glob support (--only='tests/*.cpp') is not implemented.
-func compileOnly(cfg config.Config, file string) (string, error) {
+// its own main().
+func compileOneFile(cfg config.Config, file string) (string, error) {
 	if _, err := os.Stat(file); err != nil {
 		return "", fmt.Errorf("--only file %q not found: %w", file, err)
 	}

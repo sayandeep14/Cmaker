@@ -36,7 +36,7 @@ var buildCmd = &cobra.Command{
 func init() {
 	buildCmd.Flags().Bool("release", false, "build with CMAKE_BUILD_TYPE=Release (-O3)")
 	buildCmd.Flags().String("compiler", "", "override the compiler for this build only (e.g. clang++-17), takes precedence over cmaker.yaml's 'compiler'")
-	buildCmd.Flags().String("only", "", "compile a single source file ad hoc (scratch experiments), without wiring it into the main executable")
+	buildCmd.Flags().String("only", "", "compile a source file (or glob, e.g. 'tests/*.cpp') ad hoc, without wiring it into the main executable")
 	buildCmd.Flags().IntP("jobs", "j", 0, "parallel build jobs to pass to 'cmake --build -j' (default: number of CPUs)")
 	buildCmd.Flags().String("member", "", "workspace root only: build just this member instead of the whole workspace (see cmaker.yaml's 'workspace.members')")
 }
@@ -48,11 +48,13 @@ func runBuildOnly(file string, compilerOverride string) error {
 	if compilerOverride != "" {
 		cfg.Compiler = compilerOverride
 	}
-	binPath, err := compileOnly(cfg, file)
+	bins, err := compileOnly(cfg, file)
 	if err != nil {
 		return err
 	}
-	okf("Built %s", binPath)
+	for _, bin := range bins {
+		okf("Built %s", bin)
+	}
 	return nil
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"cmaker/internal/cmake"
 	"cmaker/internal/config"
+	"cmaker/internal/registry"
 )
 
 type tool struct {
@@ -107,6 +108,8 @@ func runDoctor() error {
 		}
 	}
 
+	reportSystemPackages()
+
 	if launcherTool, launcherPath, found := cmake.DetectCompilerLauncher(); found {
 		disabled := false
 		if cfg, ok := config.TryLoad("."); ok {
@@ -153,4 +156,52 @@ func runDoctor() error {
 	}
 	okf("All required tools are ready.")
 	return nil
+}
+
+// reportSystemPackages extends 'cmaker doctor' to cover §27's
+// system_package registry entries (opencv today) - mirroring
+// discoverCompilers' "report what's already usable on this machine"
+// model, not just something `cmaker install` alone knows about. A no-op
+// (prints nothing) if the registry has no system_package entries at all,
+// so a build with no §27 entries yet still gets a clean 'doctor' output.
+func reportSystemPackages() {
+	var entries []registry.Entry
+	for _, e := range registry.List() {
+		if e.Kind == registry.KindSystemPackage || e.Kind == registry.KindPkgConfig {
+			entries = append(entries, e)
+		}
+	}
+	if len(entries) == 0 {
+		return
+	}
+	fmt.Println(colorize(ansiBold, "Extended packages (see 'cmaker search'):"))
+	for _, e := range entries {
+		if manager, ok := systemPackageInstalledVia(e); ok {
+			fmt.Printf("  -- %s: %s (via %s)\n", e.Name, colorize(ansiGreen, "Ready"), manager)
+		} else {
+			fmt.Printf("  -- %s: %s (see 'cmaker install %s')\n", e.Name, colorize(ansiYellow, "Not installed"), e.Name)
+		}
+	}
+}
+
+// systemPackageInstalledVia checks whether e is already installed via
+// whichever of its PackageManagers is actually present on this machine -
+// brew (macOS) and apt/dpkg (Debian/Ubuntu) only, matching
+// installSystemPackage's own supported set (see cmd/install.go).
+func systemPackageInstalledVia(e registry.Entry) (manager string, installed bool) {
+	if pkg, ok := e.PackageManagers["brew"]; ok {
+		if _, err := exec.LookPath("brew"); err == nil {
+			if exec.Command("brew", "list", "--formula", pkg).Run() == nil {
+				return "brew", true
+			}
+		}
+	}
+	if pkg, ok := e.PackageManagers["apt"]; ok {
+		if _, err := exec.LookPath("dpkg"); err == nil {
+			if exec.Command("dpkg", "-s", pkg).Run() == nil {
+				return "apt", true
+			}
+		}
+	}
+	return "", false
 }

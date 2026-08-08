@@ -1,0 +1,14 @@
+name: onnxruntime
+description: ONNX Runtime inference starter, fetched as a platform-matched prebuilt release archive (no model download required to build/run the demo)
+cpp_version: 17
+dependencies:
+  - name: onnxruntime
+    kind: prebuilt_archive
+    archive_url_template: "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-{platform}-1.28.0.tgz"
+    platform_names:
+      darwin/arm64: osx-arm64
+      linux/amd64: linux-x64
+      linux/arm64: linux-aarch64
+    archive_include_dir: include
+    archive_lib_dir: lib
+    link: [onnxruntime]

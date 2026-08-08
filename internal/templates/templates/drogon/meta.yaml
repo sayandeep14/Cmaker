@@ -1,0 +1,12 @@
+name: drogon
+description: Minimal C++ HTTP backend service using the Drogon web framework, fetched via CPM
+cpp_version: 17
+dependencies:
+  - name: Drogon
+    repo: drogonframework/drogon
+    tag: v1.9.13
+    link: [Drogon::Drogon]
+    options:
+      - "BUILD_TESTING OFF"
+      - "BUILD_EXAMPLES OFF"
+      - "BUILD_ORM OFF"

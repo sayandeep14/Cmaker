@@ -107,6 +107,7 @@ func init() {
 	rootCmd.AddCommand(auditCmd)
 	rootCmd.AddCommand(logsCmd)
 	rootCmd.AddCommand(healCmd)
+	rootCmd.AddCommand(explainCmd)
 	rootCmd.AddCommand(benchCmd)
 	rootCmd.AddCommand(coverageCmd)
 	rootCmd.AddCommand(docsCmd)

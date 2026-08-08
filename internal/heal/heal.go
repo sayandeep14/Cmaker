@@ -134,18 +134,39 @@ func Suggest(ctx context.Context, completer Completer, root, logPath string) (Su
 		return Suggestion{ReferencedFiles: readFiles}, nil
 	}
 
-	proposed := parseFileBlocks(raw)
+	diff, err := DiffFromModelResponse(raw, original, readFiles)
+	if err != nil {
+		return Suggestion{}, err
+	}
+	return Suggestion{Diff: diff, ReferencedFiles: readFiles}, nil
+}
+
+// DiffFromModelResponse parses raw model output (in this package's own
+// "--- file: <path> ---" full-file-content format, see systemPrompt) into a
+// unified diff against original's already-read content, walked in order.
+// Shared by Suggest (§24 - "propose a fix for this build/run failure") and
+// internal/improvise (§28 - "propose scaffold changes matching this
+// description") - both ask an LLM for full corrected file content and need
+// the exact same parsing/diffing/defensive-artifact-stripping logic
+// (ParseFileBlocks' own doc), not two independently-maintained copies of
+// it.
+func DiffFromModelResponse(raw string, original map[string]string, order []string) (string, error) {
+	proposed := ParseFileBlocks(raw)
 	if len(proposed) == 0 {
-		return Suggestion{}, fmt.Errorf("model response didn't contain any recognizable \"--- file: <path> ---\" blocks:\n%s", raw)
+		return "", fmt.Errorf("model response didn't contain any recognizable \"--- file: <path> ---\" blocks:\n%s", raw)
 	}
 
 	var diffBuilder strings.Builder
-	for _, f := range readFiles { // stable order: the same order files were read in
+	for _, f := range order { // stable order: the same order files were read in
 		newContent, ok := proposed[f]
 		if !ok {
 			continue // model didn't propose a change to this file
 		}
-		d := unifiedDiff(f, original[f], newContent)
+		orig, ok := original[f]
+		if !ok {
+			continue // f wasn't in the original set read from disk - ignore rather than diffing against ""
+		}
+		d := unifiedDiff(f, orig, newContent)
 		if d == "" {
 			continue // proposed content was identical to the original - not an actual change
 		}
@@ -154,27 +175,31 @@ func Suggest(ctx context.Context, completer Completer, root, logPath string) (Su
 		}
 		diffBuilder.WriteString(d)
 	}
-
-	return Suggestion{Diff: diffBuilder.String(), ReferencedFiles: readFiles}, nil
+	return diffBuilder.String(), nil
 }
 
 // fileBlockRe matches this package's own "--- file: <path> ---" delimiter,
 // used both to build the request (see Suggest above) and parse the
-// response (see parseFileBlocks) - one consistent format on both sides of
-// the conversation.
+// response (see ParseFileBlocks) - one consistent format on both sides of
+// the conversation, and shared by any caller asking an LLM for full
+// corrected file content in this shape (Suggest itself, and
+// internal/improvise's §28 scaffold-modification step).
 var fileBlockRe = regexp.MustCompile(`(?m)^--- file: (.+) ---$\n`)
 
-// parseFileBlocks splits raw LLM output into path -> proposed full file
-// content, per the systemPrompt's requested format. Tolerates two real,
-// observed-live model quirks despite the prompt explicitly saying not to:
-// wrapping a block in a markdown code fence, and (only possible on the
-// *last* block, since it has no following "--- file: ---" delimiter to
-// bound it) echoing a stray trailing separator line that isn't part of the
-// actual file - a live end-to-end run against claude-haiku-4-5 produced a
-// corrected file whose very last line was a bare "---", which silently
-// became part of the "fixed" file and broke compilation even though the
-// resulting diff applied perfectly cleanly. Both are stripped if present.
-func parseFileBlocks(raw string) map[string]string {
+// ParseFileBlocks splits raw LLM output into path -> proposed full file
+// content, per systemPrompt's requested format (any caller using this same
+// "--- file: <path> ---" convention in its own prompt can reuse this
+// unchanged - see DiffFromModelResponse's own doc for why that's
+// deliberate). Tolerates two real, observed-live model quirks despite the
+// prompt explicitly saying not to: wrapping a block in a markdown code
+// fence, and (only possible on the *last* block, since it has no following
+// "--- file: ---" delimiter to bound it) echoing a stray trailing
+// separator line that isn't part of the actual file - a live end-to-end
+// run against claude-haiku-4-5 produced a corrected file whose very last
+// line was a bare "---", which silently became part of the "fixed" file
+// and broke compilation even though the resulting diff applied perfectly
+// cleanly. Both are stripped if present.
+func ParseFileBlocks(raw string) map[string]string {
 	locs := fileBlockRe.FindAllStringSubmatchIndex(raw, -1)
 	result := make(map[string]string, len(locs))
 	for i, loc := range locs {

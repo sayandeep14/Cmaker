@@ -1,0 +1,11 @@
+name: opencv
+description: Computer vision starter using OpenCV, installed via your system package manager (brew/apt) - not realistically CPM-fetched from source
+cpp_version: 17
+dependencies:
+  - name: opencv
+    kind: system_package
+    find_package: OpenCV
+    package_managers:
+      brew: opencv
+      apt: libopencv-dev
+    link: ["${OpenCV_LIBS}"]

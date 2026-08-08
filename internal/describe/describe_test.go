@@ -168,6 +168,29 @@ func TestDescribeStripsCodeFences(t *testing.T) {
 	}
 }
 
+func TestDescribeStripsCodeFenceWithTrailingProse(t *testing.T) {
+	// Real, observed-live model behavior (claude-haiku-4-5, via
+	// internal/improvise's own Clarify - same response shape, same fix):
+	// a perfectly valid ```json ... ``` block immediately followed by
+	// several sentences of unrequested explanation. The old
+	// strip-a-trailing-fence-too logic only handled a response that WAS
+	// the fenced block end-to-end; it didn't strip (or tolerate) real
+	// content trailing the closing fence, so json.Unmarshal failed
+	// outright on the leftover prose. decodeFirstJSONValue (json.Decoder-
+	// based) must parse the JSON value and simply ignore everything after
+	// it.
+	fc := &fakeCompleter{response: "```json\n" +
+		`{"template": "default", "language": "cpp", "target_type": "executable"}` +
+		"\n```\n\nThis template is a great fit because it's minimal and has no dependencies to worry about."}
+	plan, err := Describe(context.Background(), fc, "anything")
+	if err != nil {
+		t.Fatalf("Describe() error = %v", err)
+	}
+	if plan.Template != "default" {
+		t.Errorf("Plan.Template = %q, want default", plan.Template)
+	}
+}
+
 func TestDescribeMalformedJSON(t *testing.T) {
 	fc := &fakeCompleter{response: "I'd suggest the backend template."}
 	if _, err := Describe(context.Background(), fc, "anything"); err == nil {

@@ -77,6 +77,86 @@ endif()
 include(${CPM_DOWNLOAD_LOCATION})
 `
 
+// archiveVarPrefix turns a dependency name into a safe, unique-enough CMake
+// variable-name prefix (uppercased, non-alphanumeric replaced with
+// underscore) so two prebuilt_archive dependencies in the same project
+// don't collide on the scratch variables writePrebuiltArchiveBlock uses.
+func archiveVarPrefix(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(name) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
+}
+
+// writePrebuiltArchiveBlock emits CMake that downloads dep.ArchiveURL (via
+// CMake's own file(DOWNLOAD), no external tooling required), extracts it
+// (file(ARCHIVE_EXTRACT), also built into CMake), and wires the result up
+// as a plain INTERFACE IMPORTED target - for SDKs distributed as prebuilt
+// binaries with no buildable-from-source CMake project at all (§27,
+// DependencyKindPrebuiltArchive; ONNX Runtime's official releases are the
+// first real example this was built and verified against).
+//
+// The download+extract only happens once (guarded by the extract
+// directory's existence, cached under CMAKE_BINARY_DIR so a clean checkout
+// still redownloads but a normal rebuild doesn't) - a multi-hundred-MB SDK
+// archive re-downloading on every configure would make this unusably slow
+// otherwise. The extracted archive's own top-level directory name varies
+// per release (e.g. "onnxruntime-osx-arm64-1.19.2"), so it's discovered via
+// glob at configure time rather than assumed to match anything cmaker
+// already knows.
+func writePrebuiltArchiveBlock(b *strings.Builder, dep config.Dependency) {
+	v := archiveVarPrefix(dep.Name)
+	fmt.Fprintf(b, `set(%[1]s_DIR "${CMAKE_BINARY_DIR}/cmake/prebuilt/%[2]s")
+set(%[1]s_ARCHIVE "${%[1]s_DIR}/archive.download")
+set(%[1]s_EXTRACT_DIR "${%[1]s_DIR}/extracted")
+if(NOT EXISTS ${%[1]s_EXTRACT_DIR})
+  file(MAKE_DIRECTORY ${%[1]s_DIR})
+  message(STATUS "Downloading %[2]s from %[3]s ...")
+  file(DOWNLOAD "%[3]s" ${%[1]s_ARCHIVE} SHOW_PROGRESS STATUS %[1]s_DL_STATUS)
+  list(GET %[1]s_DL_STATUS 0 %[1]s_DL_CODE)
+  if(NOT %[1]s_DL_CODE EQUAL 0)
+    list(GET %[1]s_DL_STATUS 1 %[1]s_DL_MSG)
+    file(REMOVE ${%[1]s_ARCHIVE})
+    message(FATAL_ERROR "Failed to download %[2]s: ${%[1]s_DL_MSG}")
+  endif()
+  file(MAKE_DIRECTORY ${%[1]s_EXTRACT_DIR})
+  file(ARCHIVE_EXTRACT INPUT ${%[1]s_ARCHIVE} DESTINATION ${%[1]s_EXTRACT_DIR})
+endif()
+file(GLOB %[1]s_ROOT_CANDIDATES LIST_DIRECTORIES true "${%[1]s_EXTRACT_DIR}/*")
+list(GET %[1]s_ROOT_CANDIDATES 0 %[1]s_ROOT)
+if(NOT %[1]s_ROOT)
+  message(FATAL_ERROR "%[2]s: extracted archive at ${%[1]s_EXTRACT_DIR} has no top-level directory")
+endif()
+add_library(%[2]s INTERFACE IMPORTED)
+target_include_directories(%[2]s INTERFACE "${%[1]s_ROOT}/%[4]s")
+file(GLOB %[1]s_LIBS_RAW "${%[1]s_ROOT}/%[5]s/*.dylib" "${%[1]s_ROOT}/%[5]s/*.so*" "${%[1]s_ROOT}/%[5]s/*.a" "${%[1]s_ROOT}/%[5]s/*.lib")
+# Several vendors ship multiple symlinked names for the same physical
+# library (e.g. libfoo.dylib -> libfoo.1.dylib -> libfoo.1.2.3.dylib) -
+# resolving each to its real path before deduplicating avoids linking (and
+# rpath-ing) the same file 2-3 times over under different names.
+set(%[1]s_LIBS "")
+foreach(%[1]s_LIB_PATH ${%[1]s_LIBS_RAW})
+  get_filename_component(%[1]s_LIB_REAL "${%[1]s_LIB_PATH}" REALPATH)
+  list(APPEND %[1]s_LIBS "${%[1]s_LIB_REAL}")
+endforeach()
+list(REMOVE_DUPLICATES %[1]s_LIBS)
+target_link_libraries(%[2]s INTERFACE ${%[1]s_LIBS})
+if(APPLE OR UNIX)
+  # The prebuilt shared library's own install name is usually just its
+  # bare filename (no absolute path baked in), so the dynamic linker needs
+  # an explicit rpath to find it at runtime - without this, the build
+  # succeeds but the resulting executable fails at startup with a
+  # library-not-found error, on both macOS (dyld) and Linux (ld.so).
+  target_link_options(%[2]s INTERFACE "-Wl,-rpath,${%[1]s_ROOT}/%[5]s")
+endif()
+`, v, dep.Name, dep.ArchiveURL, dep.ArchiveIncludeDir, dep.ArchiveLibDir)
+}
+
 // Generate writes CMakeLists.txt into root, derived from c.
 func Generate(root string, c config.Config) error {
 	if c.Workspace != nil {
@@ -99,35 +179,76 @@ func Generate(root string, c config.Config) error {
 
 	var depsBuilder strings.Builder
 	if len(c.Dependencies) > 0 {
-		depsBuilder.WriteString(cpmBootstrap)
-		depsBuilder.WriteString("\n")
+		// The CPM.cmake bootstrap is only needed for actual CPM-kind
+		// dependencies (§27's system_package/prebuilt_archive kinds don't
+		// use CPM at all) - skip it for a project with none, rather than
+		// downloading CPM.cmake for nothing.
+		needsCPM := false
 		for _, dep := range c.Dependencies {
-			// Most deps use the "owner/repo" GitHub shorthand, but some
-			// (e.g. Eigen, hosted on GitLab) need a full git URL - CPM
-			// supports both GITHUB_REPOSITORY and the generic GIT_REPOSITORY.
-			repoKeyword := "GITHUB_REPOSITORY"
-			if strings.Contains(dep.Repo, "://") {
-				repoKeyword = "GIT_REPOSITORY"
+			if dep.KindOrDefault() == config.DependencyKindCPM {
+				needsCPM = true
+				break
 			}
-			// GIT_SHALLOW avoids a full-history clone of the dependency's
-			// repo - for a dependency like raylib (500+ MB of git history
-			// vs. ~90 MB at a single tag), a full clone can be slow enough
-			// to look like a hung/failed fetch on anything but a fast
-			// connection. Safe as long as 'tag:' names an actual tag or
-			// branch (true for every dependency in cmaker's own templates);
-			// an arbitrary commit SHA can fail a shallow fetch on git hosts
-			// that don't support fetching arbitrary commits, GitHub does.
-			fmt.Fprintf(&depsBuilder, "CPMAddPackage(\n  NAME %s\n  %s %s\n  GIT_TAG %s\n  GIT_SHALLOW TRUE\n", dep.Name, repoKeyword, dep.Repo, dep.Tag)
-			if dep.DownloadOnly {
-				depsBuilder.WriteString("  DOWNLOAD_ONLY YES\n")
-			}
-			if len(dep.Options) > 0 {
-				depsBuilder.WriteString("  OPTIONS\n")
-				for _, opt := range dep.Options {
-					fmt.Fprintf(&depsBuilder, "    %q\n", opt)
+		}
+		if needsCPM {
+			depsBuilder.WriteString(cpmBootstrap)
+			depsBuilder.WriteString("\n")
+		}
+		for _, dep := range c.Dependencies {
+			switch dep.KindOrDefault() {
+			case config.DependencyKindSystemPackage:
+				// The actual package-manager install (brew/apt) already
+				// ran before this was ever written to cmaker.yaml (see
+				// cmd/install.go) - by configure time, all CMake needs to
+				// do is find what's already on the system.
+				fmt.Fprintf(&depsBuilder, "find_package(%s REQUIRED)\n", dep.FindPackage)
+			case config.DependencyKindPkgConfig:
+				// Same "already installed by now" story as
+				// DependencyKindSystemPackage, but wired in via
+				// pkg-config instead of find_package(<name>) - for
+				// libraries with no CMake package config at all (GTK/
+				// GTKmm's real Homebrew formula ships only a .pc file).
+				// pkg_check_modules' IMPORTED_TARGET keyword builds a
+				// full PkgConfig::<var> INTERFACE target (include dirs,
+				// libs, and compile options all bundled in), so nothing
+				// further is needed beyond linking it.
+				v := archiveVarPrefix(dep.Name)
+				fmt.Fprintf(&depsBuilder, "find_package(PkgConfig REQUIRED)\npkg_check_modules(%s REQUIRED IMPORTED_TARGET %s)\n", v, dep.PkgConfigModule)
+			case config.DependencyKindPrebuiltArchive:
+				writePrebuiltArchiveBlock(&depsBuilder, dep)
+			default: // DependencyKindCPM
+				// Most deps use the "owner/repo" GitHub shorthand, but some
+				// (e.g. Eigen, hosted on GitLab) need a full git URL - CPM
+				// supports both GITHUB_REPOSITORY and the generic GIT_REPOSITORY.
+				repoKeyword := "GITHUB_REPOSITORY"
+				if strings.Contains(dep.Repo, "://") {
+					repoKeyword = "GIT_REPOSITORY"
 				}
+				// GIT_SHALLOW avoids a full-history clone of the dependency's
+				// repo - for a dependency like raylib (500+ MB of git history
+				// vs. ~90 MB at a single tag), a full clone can be slow enough
+				// to look like a hung/failed fetch on anything but a fast
+				// connection. Safe as long as 'tag:' names an actual tag or
+				// branch (true for every dependency in cmaker's own templates);
+				// an arbitrary commit SHA can fail a shallow fetch on git hosts
+				// that don't support fetching arbitrary commits, GitHub does.
+				fmt.Fprintf(&depsBuilder, "CPMAddPackage(\n  NAME %s\n  %s %s\n  GIT_TAG %s\n  GIT_SHALLOW TRUE\n", dep.Name, repoKeyword, dep.Repo, dep.Tag)
+				if dep.DownloadOnly {
+					depsBuilder.WriteString("  DOWNLOAD_ONLY YES\n")
+				}
+				if len(dep.Options) > 0 {
+					depsBuilder.WriteString("  OPTIONS\n")
+					for _, opt := range dep.Options {
+						fmt.Fprintf(&depsBuilder, "    %q\n", opt)
+					}
+				}
+				depsBuilder.WriteString(")\n")
 			}
-			depsBuilder.WriteString(")\n\n")
+			if dep.PostFetchExtra != "" {
+				depsBuilder.WriteString(strings.TrimRight(dep.PostFetchExtra, "\n"))
+				depsBuilder.WriteString("\n")
+			}
+			depsBuilder.WriteString("\n")
 		}
 	}
 

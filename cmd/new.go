@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -13,6 +14,7 @@ import (
 
 	"cmaker/internal/cmake"
 	"cmaker/internal/config"
+	"cmaker/internal/llm"
 	tmpl "cmaker/internal/templates"
 )
 
@@ -25,6 +27,8 @@ type scaffoldFlagSet struct {
 	Template, Lang, Compiler, Runner, TargetType, Describe *string
 	WithRust, WithZig, Lib                                 *bool
 	WithBenchmarks, WithDocs, WithDocker                   *bool
+	Improvise                                              *bool
+	Model                                                  *string
 }
 
 func newScaffoldFlags(c *cobra.Command) *scaffoldFlagSet {
@@ -41,6 +45,8 @@ func newScaffoldFlags(c *cobra.Command) *scaffoldFlagSet {
 	f.WithBenchmarks = c.Flags().Bool("with-benchmarks", false, "add a bench/ directory wired to Google Benchmark (bench/*.cpp -> a <name>_bench executable, see 'cmaker bench')")
 	f.WithDocs = c.Flags().Bool("with-docs", false, "scaffold a Doxyfile ('cmaker docs' builds API docs from it)")
 	f.WithDocker = c.Flags().Bool("with-docker", false, "scaffold a Dockerfile + .devcontainer/devcontainer.json for building/running without a local toolchain")
+	f.Improvise = c.Flags().Bool("improvise", false, "with --describe: ask clarifying questions first if needed, then let an LLM refine the scaffolded code itself to match the description (shows a diff and asks for confirmation before writing anything)")
+	f.Model = c.Flags().String("model", "", "override the Anthropic model used for --describe/--improvise (default: "+llm.DefaultModel+" for planning, "+llm.DefaultImproviseModel+" for --improvise)")
 	return f
 }
 
@@ -54,6 +60,16 @@ func describeConflictsWithExplicitFlags(cmd *cobra.Command) error {
 		if cmd.Flags().Changed(name) {
 			return fmt.Errorf("--describe picks --%s (and the other scaffold flags) for you - remove --%s or drop --describe", name, name)
 		}
+	}
+	return nil
+}
+
+// improviseRequiresDescribe reports an error if --improvise was given
+// without --describe - --improvise only refines/clarifies a --describe
+// plan, it has no standalone meaning (see ROADMAP.md §28).
+func improviseRequiresDescribe(cmd *cobra.Command, describeVal string) error {
+	if cmd.Flags().Changed("improvise") && describeVal == "" {
+		return fmt.Errorf("--improvise only applies together with --describe")
 	}
 	return nil
 }
@@ -81,7 +97,14 @@ func init() {
 			if err := describeConflictsWithExplicitFlags(cmd); err != nil {
 				return err
 			}
-			return runDescribeAndScaffold(name, name, *newFlags.Describe, *newFlags.Compiler, *newFlags.Runner)
+			return runDescribeAndScaffold(describeOptions{
+				Root: name, Name: name, Description: *newFlags.Describe,
+				Compiler: *newFlags.Compiler, Runner: *newFlags.Runner,
+				Improvise: *newFlags.Improvise, Model: *newFlags.Model,
+			})
+		}
+		if err := improviseRequiresDescribe(cmd, *newFlags.Describe); err != nil {
+			return err
 		}
 		if err := scaffoldProject(name, name, *newFlags.Template, *newFlags.Lang, *newFlags.Compiler, *newFlags.WithRust, *newFlags.WithZig, *newFlags.Runner, resolveTargetType(*newFlags.TargetType, *newFlags.Lib)); err != nil {
 			return err
@@ -100,7 +123,14 @@ func init() {
 			if err := describeConflictsWithExplicitFlags(cmd); err != nil {
 				return err
 			}
-			return runDescribeAndScaffold(".", name, *initFlags.Describe, *initFlags.Compiler, *initFlags.Runner)
+			return runDescribeAndScaffold(describeOptions{
+				Root: ".", Name: name, Description: *initFlags.Describe,
+				Compiler: *initFlags.Compiler, Runner: *initFlags.Runner,
+				Improvise: *initFlags.Improvise, Model: *initFlags.Model,
+			})
+		}
+		if err := improviseRequiresDescribe(cmd, *initFlags.Describe); err != nil {
+			return err
 		}
 		if err := scaffoldProject(".", name, *initFlags.Template, *initFlags.Lang, *initFlags.Compiler, *initFlags.WithRust, *initFlags.WithZig, *initFlags.Runner, resolveTargetType(*initFlags.TargetType, *initFlags.Lib)); err != nil {
 			return err
@@ -193,13 +223,18 @@ func scaffoldProject(root string, name string, templateName string, language str
 		executableName = libName
 	}
 
+	resolvedDeps, err := resolveTemplateArchiveDependencies(meta.Dependencies)
+	if err != nil {
+		return err
+	}
+
 	cfg := config.Config{
 		ProjectName:   name,
 		SchemaVersion: config.CurrentSchemaVersion,
 		Executable:    executableName,
 		IncludeDirs:   []string{"include"},
 		LinkLibraries: meta.LinkLibraries,
-		Dependencies:  meta.Dependencies,
+		Dependencies:  resolvedDeps,
 		Compiler:      compiler,
 		Runner:        runner,
 	}
@@ -281,6 +316,27 @@ func scaffoldProject(root string, name string, templateName string, language str
 
 	if err := cmake.ValidateCompilerSupportsStandard(cfg.Compiler, cfg.Language, cfg.CppVersion, cfg.CVersion); err != nil {
 		warnf("%v", err)
+	}
+
+	// A template can declare a system_package/pkg_config dependency
+	// directly (e.g. the opencv/gtkmm templates) - the package manager
+	// install has to actually run here, same as cmd/install.go's own
+	// registry-entry path, or the pre-flight configure below (and every
+	// later 'cmaker build') would just fail on a missing find_package()/
+	// pkg-config module. A failure here is a soft warning, matching the
+	// rest of this pre-flight section's own philosophy - the scaffold
+	// itself is still valid; the user can install it by hand and retry.
+	for _, dep := range cfg.Dependencies {
+		kind := dep.KindOrDefault()
+		if kind != config.DependencyKindSystemPackage && kind != config.DependencyKindPkgConfig {
+			continue
+		}
+		if len(dep.PackageManagers) == 0 {
+			continue
+		}
+		if err := installSystemPackage(dep.Name, dep.PackageManagers); err != nil {
+			warnf("%v", err)
+		}
 	}
 
 	// PRE-FLIGHT: run CMake configuration immediately. A failure here is a
@@ -463,4 +519,24 @@ func sanitizeIdentifier(name string) string {
 		return "_" + ident
 	}
 	return ident
+}
+
+// resolveTemplateArchiveDependencies resolves any prebuilt_archive-kind
+// dependency in deps (a template's own meta.yaml, e.g. the onnxruntime
+// template) from a platform-agnostic ArchiveURLTemplate into a concrete
+// ArchiveURL for this machine, the same way cmd/install.go resolves a
+// registry entry's own template - templates just declare the Dependency
+// shape directly in meta.yaml rather than going through the registry.
+// Every other dependency (the vast majority - plain cpm/system_package)
+// passes through unchanged.
+func resolveTemplateArchiveDependencies(deps []config.Dependency) ([]config.Dependency, error) {
+	resolved := make([]config.Dependency, len(deps))
+	for i, dep := range deps {
+		r, err := dep.ResolveArchiveURLTemplate(runtime.GOOS, runtime.GOARCH)
+		if err != nil {
+			return nil, err
+		}
+		resolved[i] = r
+	}
+	return resolved, nil
 }

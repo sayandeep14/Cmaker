@@ -1,0 +1,10 @@
+name: googletest
+description: GoogleTest test scaffold, fetched automatically via CPM.cmake
+cpp_version: 17
+testing: true
+dependencies:
+  - name: googletest
+    repo: google/googletest
+    tag: v1.17.0
+    link: [GTest::gtest, GTest::gtest_main]
+    options: ["INSTALL_GTEST OFF"]

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -88,7 +89,7 @@ func runInstall(name, gitURL, tag string, link, options []string, downloadOnly b
 		}
 	}
 
-	var dep config.Dependency
+	var newDeps []config.Dependency
 	if gitURL != "" {
 		if tag == "" {
 			return fmt.Errorf("--tag is required when using --git")
@@ -96,7 +97,7 @@ func runInstall(name, gitURL, tag string, link, options []string, downloadOnly b
 		if len(link) == 0 {
 			return fmt.Errorf("--link is required when using --git (which CMake target(s) should be linked?)")
 		}
-		dep = config.Dependency{Name: name, Repo: gitURL, Tag: tag, Link: link, Options: options, DownloadOnly: downloadOnly}
+		newDeps = []config.Dependency{{Name: name, Repo: gitURL, Tag: tag, Link: link, Options: options, DownloadOnly: downloadOnly}}
 	} else {
 		entry, ok := registry.Find(name)
 		if !ok {
@@ -107,10 +108,21 @@ func runInstall(name, gitURL, tag string, link, options []string, downloadOnly b
 			msg += "\nFor a library not in the registry, use --git=<url> --tag=<tag> --link=<target>."
 			return fmt.Errorf("%s", msg)
 		}
-		dep = entry.ToDependency()
+
+		chain, err := resolveInstallChain(entry, cfg)
+		if err != nil {
+			return err
+		}
+		for _, e := range chain {
+			dep, err := installEntry(e)
+			if err != nil {
+				return err
+			}
+			newDeps = append(newDeps, dep)
+		}
 	}
 
-	cfg.Dependencies = append(cfg.Dependencies, dep)
+	cfg.Dependencies = append(cfg.Dependencies, newDeps...)
 	if err := config.Save("cmaker.yaml", cfg); err != nil {
 		return fmt.Errorf("failed to update cmaker.yaml: %w", err)
 	}
@@ -118,7 +130,9 @@ func runInstall(name, gitURL, tag string, link, options []string, downloadOnly b
 		return fmt.Errorf("failed to write CMakeLists.txt: %w", err)
 	}
 
-	infof("Fetching %s (%s@%s)...", dep.Name, dep.Repo, dep.Tag)
+	for _, dep := range newDeps {
+		infof("%s", installFetchMessage(dep))
+	}
 	configArgs := append([]string{"-S", ".", "-B", "build"}, cmake.StandardConfigureFlags(cfg)...)
 	configArgs = append(configArgs, cmake.CompilerArgs(cfg.Compiler, cfg.Language)...)
 	configCmd := exec.Command("cmake", configArgs...)
@@ -132,8 +146,158 @@ func runInstall(name, gitURL, tag string, link, options []string, downloadOnly b
 		debugf("cmaker.lock update: %v", err)
 	}
 
-	okf("Installed %s - linked as %s", dep.Name, strings.Join(dep.Link, ", "))
+	if len(newDeps) == 1 {
+		okf("Installed %s - linked as %s", newDeps[0].Name, strings.Join(newDeps[0].Link, ", "))
+	} else {
+		prereqs := make([]string, len(newDeps)-1)
+		for i, d := range newDeps[:len(newDeps)-1] {
+			prereqs[i] = d.Name
+		}
+		last := newDeps[len(newDeps)-1]
+		okf("Installed %s (+ prerequisite(s): %s) - linked as %s", last.Name, strings.Join(prereqs, ", "), strings.Join(last.Link, ", "))
+	}
 	return nil
+}
+
+// resolveInstallChain walks entry.Requires (transitively, cycle-checked)
+// and returns the full ordered list of registry entries that need
+// installing - every prerequisite before the entry that needs it, e.g.
+// [asio, Crow] for `cmaker install crow`. Anything already present in
+// cfg.Dependencies is silently skipped rather than erroring, since a
+// shared prerequisite (asio, glfw) may already be there from an earlier
+// unrelated install.
+// registryFind is registry.Find by default - a package var so tests can
+// swap in a fake lookup (e.g. to exercise resolveInstallChain's cycle
+// detection with synthetic entries the real built-in registry, correctly,
+// has none of).
+var registryFind = registry.Find
+
+func resolveInstallChain(entry registry.Entry, cfg config.Config) ([]registry.Entry, error) {
+	alreadyInstalled := make(map[string]bool, len(cfg.Dependencies))
+	for _, d := range cfg.Dependencies {
+		alreadyInstalled[strings.ToLower(d.Name)] = true
+	}
+
+	var chain []registry.Entry
+	inChain := map[string]bool{}
+	var visit func(e registry.Entry, visiting map[string]bool) error
+	visit = func(e registry.Entry, visiting map[string]bool) error {
+		key := strings.ToLower(e.Name)
+		if alreadyInstalled[key] || inChain[key] {
+			return nil
+		}
+		if visiting[key] {
+			return fmt.Errorf("circular 'requires' relationship in the registry involving %q", e.Name)
+		}
+		visiting[key] = true
+		for _, reqName := range e.Requires {
+			reqEntry, ok := registryFind(reqName)
+			if !ok {
+				return fmt.Errorf("%q requires %q, which isn't in the registry (internal registry data error - please report this)", e.Name, reqName)
+			}
+			if err := visit(reqEntry, visiting); err != nil {
+				return err
+			}
+		}
+		inChain[key] = true
+		chain = append(chain, e)
+		return nil
+	}
+	if err := visit(entry, map[string]bool{}); err != nil {
+		return nil, err
+	}
+	return chain, nil
+}
+
+// installEntry performs whatever side effect entry.Kind requires (a real
+// package-manager install for system_package; resolving the current
+// platform's URL for prebuilt_archive; nothing yet for cpm, which only
+// fetches at the next configure) and returns the resulting config.Dependency.
+func installEntry(entry registry.Entry) (config.Dependency, error) {
+	switch entry.Kind {
+	case registry.KindSystemPackage, registry.KindPkgConfig:
+		// Runs and must succeed *before* cmaker.yaml is touched -
+		// find_package(...)/pkg_check_modules(...) at the next configure
+		// will fail outright if the package manager install didn't
+		// actually happen.
+		if err := installSystemPackage(entry.Name, entry.PackageManagers); err != nil {
+			return config.Dependency{}, err
+		}
+		return entry.ToDependency(), nil
+	case registry.KindPrebuiltArchive:
+		url, err := entry.ResolveArchiveURL(runtime.GOOS, runtime.GOARCH)
+		if err != nil {
+			return config.Dependency{}, err
+		}
+		return entry.ToDependencyForArchive(url), nil
+	default: // registry.KindCPM
+		return entry.ToDependency(), nil
+	}
+}
+
+// installFetchMessage returns the "Fetching..." status line, adapted to
+// dep.Kind - a cpm dependency has a real repo/tag to name, but
+// system_package/prebuilt_archive dependencies don't (the former is
+// already installed by this point; the latter's real fetch is about to
+// happen inside the cmake configure that follows, not before it).
+func installFetchMessage(dep config.Dependency) string {
+	switch dep.KindOrDefault() {
+	case config.DependencyKindSystemPackage:
+		return fmt.Sprintf("Wiring in %s via find_package(%s)...", dep.Name, dep.FindPackage)
+	case config.DependencyKindPkgConfig:
+		return fmt.Sprintf("Wiring in %s via pkg-config (%s)...", dep.Name, dep.PkgConfigModule)
+	case config.DependencyKindPrebuiltArchive:
+		return fmt.Sprintf("Downloading %s from %s...", dep.Name, dep.ArchiveURL)
+	default:
+		return fmt.Sprintf("Fetching %s (%s@%s)...", dep.Name, dep.Repo, dep.Tag)
+	}
+}
+
+// installSystemPackage shells out to whichever of entry.PackageManagers is
+// actually available on this machine (checked in a fixed preference order),
+// streaming the real install output to the terminal exactly like every
+// other cmaker command that shells out to a subprocess. Only brew (macOS)
+// and apt (Debian/Ubuntu) are supported today - vcpkg/choco (Windows) are a
+// documented, not-yet-implemented follow-up (§27).
+func installSystemPackage(name string, packageManagers map[string]string) error {
+	type manager struct {
+		id      string
+		lookup  string   // binary to check via exec.LookPath
+		command []string // argv prefix, package name appended
+	}
+	managers := []manager{
+		{id: "brew", lookup: "brew", command: []string{"brew", "install"}},
+		{id: "apt", lookup: "apt-get", command: []string{"sudo", "apt-get", "install", "-y"}},
+	}
+
+	for _, m := range managers {
+		pkg, ok := packageManagers[m.id]
+		if !ok {
+			continue
+		}
+		if _, err := exec.LookPath(m.lookup); err != nil {
+			continue
+		}
+		infof("Installing %s via %s (%s)...", name, m.id, pkg)
+		installCmd := exec.Command(m.command[0], append(m.command[1:], pkg)...)
+		installCmd.Stdout = os.Stdout
+		installCmd.Stderr = os.Stderr
+		if err := installCmd.Run(); err != nil {
+			return fmt.Errorf("%s install %s failed: %w", m.id, pkg, err)
+		}
+		return nil
+	}
+
+	tried := make([]string, 0, len(managers))
+	for _, m := range managers {
+		if _, ok := packageManagers[m.id]; ok {
+			tried = append(tried, m.id)
+		}
+	}
+	if len(tried) == 0 {
+		return fmt.Errorf("%q has no known package manager entry for %s", name, runtime.GOOS)
+	}
+	return fmt.Errorf("%q needs one of these package managers on PATH: %s (none found)", name, strings.Join(tried, ", "))
 }
 
 // runUninstall removes name from cmaker.yaml's dependencies and its
@@ -186,16 +350,33 @@ func runList(licenses bool) error {
 		return nil
 	}
 	for _, dep := range cfg.Dependencies {
-		line := fmt.Sprintf("%s (%s@%s) -> %s", dep.Name, dep.Repo, dep.Tag, strings.Join(dep.Link, ", "))
+		var line string
+		switch dep.KindOrDefault() {
+		case config.DependencyKindSystemPackage:
+			line = fmt.Sprintf("%s (system package, find_package(%s)) -> %s", dep.Name, dep.FindPackage, strings.Join(dep.Link, ", "))
+		case config.DependencyKindPkgConfig:
+			line = fmt.Sprintf("%s (system package, pkg-config %s) -> %s", dep.Name, dep.PkgConfigModule, strings.Join(dep.Link, ", "))
+		case config.DependencyKindPrebuiltArchive:
+			line = fmt.Sprintf("%s (prebuilt archive: %s) -> %s", dep.Name, dep.ArchiveURL, strings.Join(dep.Link, ", "))
+		default:
+			line = fmt.Sprintf("%s (%s@%s) -> %s", dep.Name, dep.Repo, dep.Tag, strings.Join(dep.Link, ", "))
+		}
 		if licenses {
-			license, err := audit.GitHubLicense(context.Background(), dep.Repo)
-			switch {
-			case err != nil:
-				license = "unknown"
-			case license == "":
-				license = "undetected"
+			// Only a cpm dependency has a GitHub repo to look a license up
+			// for - system_package/prebuilt_archive dependencies aren't
+			// fetched from a repo cmaker knows about at all.
+			if dep.KindOrDefault() == config.DependencyKindCPM {
+				license, err := audit.GitHubLicense(context.Background(), dep.Repo)
+				switch {
+				case err != nil:
+					license = "unknown"
+				case license == "":
+					license = "undetected"
+				}
+				line += " - license: " + license
+			} else {
+				line += " - license: n/a"
 			}
-			line += " - license: " + license
 		}
 		fmt.Println(line)
 	}

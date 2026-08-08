@@ -1,0 +1,13 @@
+name: llama-cpp
+description: LLM inference starter using llama.cpp's C API, fetched via CPM (no model download required to build/run the demo)
+cpp_version: 17
+dependencies:
+  - name: llama
+    repo: ggml-org/llama.cpp
+    tag: b3600
+    link: [llama, ggml]
+    options:
+      - "LLAMA_BUILD_EXAMPLES OFF"
+      - "LLAMA_BUILD_TESTS OFF"
+      - "LLAMA_BUILD_SERVER OFF"
+      - "LLAMA_CURL OFF"

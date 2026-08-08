@@ -1,0 +1,13 @@
+name: wxwidgets
+description: wxWidgets native GUI window, fetched via CPM
+cpp_version: 17
+dependencies:
+  - name: wxWidgets
+    repo: wxWidgets/wxWidgets
+    tag: v3.3.3
+    link: [wx::core, wx::base]
+    options:
+      - "wxBUILD_SHARED OFF"
+      - "wxBUILD_SAMPLES OFF"
+      - "wxBUILD_TESTS OFF"
+      - "wxBUILD_DEMOS OFF"

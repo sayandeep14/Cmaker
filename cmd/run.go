@@ -31,19 +31,30 @@ var runCmd = &cobra.Command{
 }
 
 func init() {
-	runCmd.Flags().String("only", "", "compile and run a single source file ad hoc, without wiring it into the main executable")
+	runCmd.Flags().String("only", "", "compile and run a source file (or glob, e.g. 'tests/*.cpp') ad hoc, without wiring it into the main executable")
 	runCmd.Flags().String("compiler", "", "compiler to use for --only, overriding cmaker.yaml's 'compiler'")
 	runCmd.Flags().String("runner", "", "custom program to invoke as '<runner> <file>' instead of compiling then running (e.g. crun), overriding cmaker.yaml's 'runner' - applies to --only and to a whole project's 'cmaker run'")
 	runCmd.Flags().String("member", "", "workspace root only: which member to run (required in workspace mode, see cmaker.yaml's 'workspace.members')")
 }
 
-// runOnlyFile runs a single source file ad hoc. If a runner is configured
-// (via --runner or cmaker.yaml's 'runner'), it takes priority: the whole
-// compile-then-run flow is skipped in favor of directly invoking
-// `<runner> <file> [args...]`, since tools like crun compile and run in a
-// single step and don't produce a separate binary path cmaker could exec
-// itself. Otherwise, falls back to compiling via compileOnly and running the
-// resulting scratch binary, forwarding args after the `--` separator.
+// runOnlyFile runs every source file matching file (a plain path or a glob
+// like 'tests/*.cpp') ad hoc. If a runner is configured (via --runner or
+// cmaker.yaml's 'runner'), it takes priority: the whole compile-then-run
+// flow is skipped in favor of directly invoking `<runner> <file> [args...]`
+// per matched file, since tools like crun compile and run in a single step
+// and don't produce a separate binary path cmaker could exec itself.
+// Otherwise, falls back to compiling each match via compileOnly and running
+// the resulting scratch binaries, forwarding args after the `--` separator
+// to each.
+//
+// A single match preserves the original exact behavior (the child's own
+// exit code is propagated via os.Exit, unchanged since before glob support
+// existed). Multiple matches run all of them, aggregate pass/fail (rather
+// than stopping at the first failure - the point of a glob like
+// 'tests/*.cpp' is seeing every result, the same way a real test runner
+// would), and exit 1 overall if any failed - a specific child's exact exit
+// code doesn't generalize across more than one child, so this only ever
+// reports a real failure occurred, not which one.
 func runOnlyFile(file string, compilerOverride string, runnerOverride string, args []string) error {
 	cfg := loadConfigOrExit()
 	if compilerOverride != "" {
@@ -53,15 +64,34 @@ func runOnlyFile(file string, compilerOverride string, runnerOverride string, ar
 	if runnerOverride != "" {
 		runner = runnerOverride
 	}
+
 	if runner != "" {
-		return runViaRunner(runner, file, args)
+		files, err := resolveOnlyFiles(file)
+		if err != nil {
+			return err
+		}
+		if len(files) == 1 {
+			return runViaRunner(runner, files[0], args)
+		}
+		return runManyViaRunner(runner, files, args)
 	}
 
-	binPath, err := compileOnly(cfg, file)
+	bins, err := compileOnly(cfg, file)
 	if err != nil {
 		return err
 	}
+	if len(bins) == 1 {
+		return runOneBinaryExact(bins[0], args)
+	}
+	return runManyBinaries(bins, args)
+}
 
+// runOneBinaryExact runs binPath, streaming stdout/stderr/stdin straight
+// through and propagating its exact exit code via os.Exit - the original
+// single-file '--only' run behavior, unchanged, extracted so the new
+// multi-match path (runManyBinaries) can sit alongside it without altering
+// this one.
+func runOneBinaryExact(binPath string, args []string) error {
 	child := exec.Command(binPath, args...)
 	child.Stdout, child.Stderr, child.Stdin = os.Stdout, os.Stderr, os.Stdin
 	infof("Running %s:\n", binPath)
@@ -71,6 +101,57 @@ func runOnlyFile(file string, compilerOverride string, runnerOverride string, ar
 		}
 		return err
 	}
+	return nil
+}
+
+// runManyBinaries runs every binary in bins in sequence, streaming each
+// one's output and reporting a pass/fail summary at the end - exits 1 if
+// any failed, matching '--only=<glob>' being a lightweight ad hoc test
+// runner, not just a batch compiler.
+func runManyBinaries(bins []string, args []string) error {
+	var failed []string
+	for _, bin := range bins {
+		infof("--- Running %s ---", bin)
+		child := exec.Command(bin, args...)
+		child.Stdout, child.Stderr, child.Stdin = os.Stdout, os.Stderr, os.Stdin
+		if err := child.Run(); err != nil {
+			failed = append(failed, bin)
+		}
+	}
+	return reportOnlyGlobResult(len(bins), failed)
+}
+
+// runManyViaRunner is runManyBinaries' equivalent for a configured runner
+// (--runner/cmaker.yaml's 'runner') - each matched file is passed to
+// `<runner> <file> [args...]` in turn instead of being compiled first.
+func runManyViaRunner(runner string, files []string, args []string) error {
+	var failed []string
+	for _, f := range files {
+		infof("--- %s %s ---", runner, f)
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+		parts := append([]string{runner, shellQuote(f)}, quoteAll(args)...)
+		child := exec.Command(shell, "-i", "-c", strings.Join(parts, " "))
+		child.Stdout, child.Stderr, child.Stdin = os.Stdout, os.Stderr, os.Stdin
+		if err := child.Run(); err != nil {
+			failed = append(failed, f)
+		}
+	}
+	return reportOnlyGlobResult(len(files), failed)
+}
+
+// reportOnlyGlobResult prints a pass/fail summary for a multi-match
+// '--only=<glob>' run and exits 1 if anything failed - shared by
+// runManyBinaries/runManyViaRunner so both report identically.
+func reportOnlyGlobResult(total int, failed []string) error {
+	if len(failed) == 0 {
+		okf("%d/%d passed", total, total)
+		return nil
+	}
+	errorf("%d/%d passed - failed: %s", total-len(failed), total, strings.Join(failed, ", "))
+	os.Exit(1)
 	return nil
 }
 

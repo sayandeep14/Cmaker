@@ -35,7 +35,14 @@ func init() {
 			if cmd.Flags().Changed("backend") || cmd.Flags().Changed("ml") {
 				return fmt.Errorf("--describe picks the template for you - remove --backend/--ml or drop --describe")
 			}
-			return runDescribeAndScaffold(name, name, *f.Describe, *f.Compiler, *f.Runner)
+			return runDescribeAndScaffold(describeOptions{
+				Root: name, Name: name, Description: *f.Describe,
+				Compiler: *f.Compiler, Runner: *f.Runner,
+				Improvise: *f.Improvise, Model: *f.Model,
+			})
+		}
+		if err := improviseRequiresDescribe(cmd, *f.Describe); err != nil {
+			return err
 		}
 
 		selectedTemplate := *f.Template

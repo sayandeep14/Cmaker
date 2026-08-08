@@ -25,6 +25,15 @@ import (
 // identifying a class's data members, not a large generation task.
 const DefaultModel = "claude-haiku-4-5-20251001"
 
+// DefaultImproviseModel is the default model for `cmaker new --describe
+// --improvise` (§28) specifically - unlike DefaultModel's single-shot
+// structured-extraction tasks (identify a class's members, pick a
+// template), --improvise does multi-turn clarification plus real code
+// authorship, a heavier reasoning job that benefits from a stronger model
+// by default. Still overridable via --model like every other AI-assisted
+// command.
+const DefaultImproviseModel = "claude-sonnet-5"
+
 const (
 	apiURL     = "https://api.anthropic.com/v1/messages"
 	apiVersion = "2023-06-01"
@@ -43,7 +52,7 @@ type Client struct {
 func NewClientFromEnv(model string) (*Client, error) {
 	key := os.Getenv("ANTHROPIC_API_KEY")
 	if key == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY is not set - 'cmaker generate accessors' needs an Anthropic API key to identify class members (get one at https://console.anthropic.com/)")
+		return nil, fmt.Errorf("ANTHROPIC_API_KEY is not set - this command needs an Anthropic API key (get one at https://console.anthropic.com/)")
 	}
 	if model == "" {
 		model = DefaultModel

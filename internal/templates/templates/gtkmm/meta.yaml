@@ -1,0 +1,11 @@
+name: gtkmm
+description: GTKmm native GUI window, installed via your system package manager (brew/apt) - GTK ships no CMake package config at all, only pkg-config
+cpp_version: 17
+dependencies:
+  - name: gtkmm
+    kind: pkg_config
+    pkg_config_module: gtkmm-4.0
+    package_managers:
+      brew: gtkmm4
+      apt: libgtkmm-4.0-dev
+    link: [PkgConfig::GTKMM]

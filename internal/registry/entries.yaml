@@ -40,3 +40,158 @@
   link: [benchmark::benchmark_main]
   options: ["BENCHMARK_ENABLE_TESTING OFF", "BENCHMARK_ENABLE_GTEST_TESTS OFF"]
   notes: Google's microbenchmarking library (used by 'cmaker new --with-benchmarks')
+
+# --- §27: kinds beyond plain CPM ---
+- name: opencv
+  kind: system_package
+  find_package: OpenCV
+  link: ["${OpenCV_LIBS}"]
+  package_managers:
+    brew: opencv
+    apt: libopencv-dev
+  notes: Computer vision library - installed via your system package manager (brew/apt), not built from source (not realistically CPM-fetchable at this size)
+- name: onnxruntime
+  kind: prebuilt_archive
+  archive_url_template: "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-{platform}-1.28.0.tgz"
+  platform_names:
+    darwin/arm64: osx-arm64
+    linux/amd64: linux-x64
+    linux/arm64: linux-aarch64
+  archive_include_dir: include
+  archive_lib_dir: lib
+  link: [onnxruntime]
+  notes: ONNX Runtime's official prebuilt release (CPU build) - no source build available for this at reasonable time/disk cost, fetched as a platform-matched binary archive instead. No osx-x64 (Intel Mac) build is published upstream as of this version.
+- name: boost
+  kind: system_package
+  find_package: Boost
+  link: [Boost::headers]
+  package_managers:
+    brew: boost
+    apt: libboost-all-dev
+  notes: Collection of portable C++ source libraries - installed via your system package manager (brew/apt), not built from source (not realistically CPM-fetchable at this size). Used by the 'boost-beast' template.
+
+# --- §26: libraries used by the domain templates (backend/GUI/audio/ML),
+# also independently installable via 'cmaker install <name>' into any
+# existing project, not just via 'cmaker new --template=<name>' ---
+- name: httplib
+  repo: yhirose/cpp-httplib
+  default_tag: v0.15.3
+  link: [httplib::httplib]
+  notes: Header-only HTTP/HTTPS client and server library (used by the 'backend' template)
+- name: crow
+  requires: [asio]
+  repo: CrowCpp/Crow
+  default_tag: v1.2.0
+  link: [Crow::Crow]
+  post_fetch_extra: |
+    # Crow's own http_server.h calls std::this_thread::yield() without
+    # including <thread> itself - it happens to compile anyway whenever
+    # something else transitively pulls <thread> in first (observed
+    # working at cpp_version 17), but fails outright as a real compiler
+    # error ("no member named 'yield' in namespace 'std::this_thread'")
+    # at cpp_version 26, where nothing else in this minimal project chain
+    # happens to include it first. Force-including <thread> for every
+    # translation unit that links Crow works around Crow's own bug
+    # regardless of the consuming project's C++ standard or its other
+    # includes.
+    if(TARGET Crow)
+      target_compile_options(Crow INTERFACE "-include" "thread")
+    endif()
+  notes: Micro web framework for building HTTP services (used by the 'crow' template) - requires asio, installed automatically first
+- name: asio
+  repo: chriskohlhoff/asio
+  default_tag: asio-1-30-2
+  download_only: true
+  post_fetch_extra: |
+    if(asio_ADDED AND NOT TARGET asio::asio)
+      add_library(asio::asio INTERFACE IMPORTED)
+      target_include_directories(asio::asio INTERFACE ${asio_SOURCE_DIR}/asio/include)
+      target_compile_definitions(asio::asio INTERFACE ASIO_STANDALONE)
+      find_package(Threads REQUIRED)
+      target_link_libraries(asio::asio INTERFACE Threads::Threads)
+    endif()
+  link: [asio::asio]
+  notes: Standalone (non-Boost) networking library - a prerequisite for 'crow', also independently installable
+- name: oatpp
+  repo: oatpp/oatpp
+  default_tag: "1.3.1"
+  link: [oatpp]
+  options: ["OATPP_BUILD_TESTS OFF"]
+  notes: Oat++ web framework for building HTTP services (used by the 'oatpp' template)
+- name: raylib
+  repo: raysan5/raylib
+  default_tag: "5.0"
+  link: [raylib]
+  options: ["BUILD_EXAMPLES OFF"]
+  notes: Simple, game-oriented graphics/windowing library (used by the 'raylib' template)
+- name: sfml
+  repo: SFML/SFML
+  default_tag: "2.6.1"
+  link: [sfml-graphics, sfml-window, sfml-system]
+  options: ["SFML_BUILD_EXAMPLES OFF", "SFML_BUILD_AUDIO OFF", "SFML_BUILD_NETWORK OFF"]
+  notes: 2D game/graphics/window library (used by the 'sfml' template)
+- name: glfw
+  repo: glfw/glfw
+  default_tag: "3.4"
+  link: [glfw]
+  options: ["GLFW_BUILD_DOCS OFF", "GLFW_BUILD_TESTS OFF", "GLFW_BUILD_EXAMPLES OFF"]
+  notes: Cross-platform window/input/OpenGL-context library - a prerequisite for 'imgui', also independently installable
+- name: imgui
+  requires: [glfw]
+  repo: ocornut/imgui
+  default_tag: v1.91.0
+  download_only: true
+  post_fetch_extra: |
+    find_package(OpenGL REQUIRED)
+    if(imgui_ADDED AND NOT TARGET imgui)
+      add_library(imgui STATIC
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/imgui_demo.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+      )
+      target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+      target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+    endif()
+  link: [imgui]
+  notes: Dear ImGui immediate-mode GUI library, GLFW+OpenGL3 backend (used by the 'imgui' template) - requires glfw, installed automatically first
+- name: wxwidgets
+  repo: wxWidgets/wxWidgets
+  default_tag: v3.3.3
+  link: [wx::core, wx::base]
+  options: ["wxBUILD_SHARED OFF", "wxBUILD_SAMPLES OFF", "wxBUILD_TESTS OFF", "wxBUILD_DEMOS OFF"]
+  notes: Native cross-platform GUI toolkit (used by the 'wxwidgets' template) - a real from-source build, expect several minutes the first time
+- name: eigen
+  repo: "https://gitlab.com/libeigen/eigen.git"
+  default_tag: "3.4.0"
+  download_only: true
+  post_fetch_extra: |
+    if(eigen_ADDED AND NOT TARGET Eigen)
+      add_library(Eigen INTERFACE IMPORTED)
+      target_include_directories(Eigen INTERFACE ${eigen_SOURCE_DIR})
+    endif()
+  link: [Eigen]
+  notes: Linear algebra header library (used by the 'ml-eigen' template)
+- name: llama-cpp
+  repo: ggml-org/llama.cpp
+  default_tag: b3600
+  link: [llama, ggml]
+  options: ["LLAMA_BUILD_EXAMPLES OFF", "LLAMA_BUILD_TESTS OFF", "LLAMA_BUILD_SERVER OFF", "LLAMA_CURL OFF"]
+  notes: LLM inference library, C API (used by the 'llama-cpp' template) - a real, sizable build the first time
+- name: drogon
+  repo: drogonframework/drogon
+  default_tag: v1.9.13
+  link: [Drogon::Drogon]
+  options: ["BUILD_TESTING OFF", "BUILD_EXAMPLES OFF", "BUILD_ORM OFF"]
+  notes: Drogon web framework for building HTTP services (used by the 'drogon' template) - Drogon's own CMakeLists.txt requires OpenSSL and jsoncpp already available on the system (via find_package - not CPM-fetched by cmaker), unlike this registry's other CPM entries
+- name: gtkmm
+  kind: pkg_config
+  pkg_config_module: gtkmm-4.0
+  link: [PkgConfig::GTKMM]
+  package_managers:
+    brew: gtkmm4
+    apt: libgtkmm-4.0-dev
+  notes: GTKmm native GUI toolkit (used by the 'gtkmm' template) - GTK ships no CMake package config at all, only pkg-config, installed via your system package manager (brew/apt)

@@ -53,3 +53,44 @@ func TestTargetTypeOrDefault(t *testing.T) {
 		t.Errorf("TargetTypeOrDefault(\"static_library\") = %q, want \"static_library\"", got)
 	}
 }
+
+func TestResolveArchiveURLTemplateNoTemplateIsNoOp(t *testing.T) {
+	dep := Dependency{Name: "fmt", Repo: "fmtlib/fmt", Tag: "11.2.0"}
+	got, err := dep.ResolveArchiveURLTemplate("darwin", "arm64")
+	if err != nil {
+		t.Fatalf("ResolveArchiveURLTemplate() error = %v", err)
+	}
+	if got.ArchiveURL != "" || got.Repo != "fmtlib/fmt" {
+		t.Errorf("ResolveArchiveURLTemplate() on a non-archive dependency = %+v, want unchanged", got)
+	}
+}
+
+func TestResolveArchiveURLTemplateResolves(t *testing.T) {
+	dep := Dependency{
+		Name:               "onnxruntime",
+		ArchiveURLTemplate: "https://example.com/onnxruntime-{platform}-1.28.0.tgz",
+		PlatformNames:      map[string]string{"darwin/arm64": "osx-arm64", "linux/amd64": "linux-x64"},
+	}
+	got, err := dep.ResolveArchiveURLTemplate("darwin", "arm64")
+	if err != nil {
+		t.Fatalf("ResolveArchiveURLTemplate() error = %v", err)
+	}
+	want := "https://example.com/onnxruntime-osx-arm64-1.28.0.tgz"
+	if got.ArchiveURL != want {
+		t.Errorf("ResolveArchiveURLTemplate().ArchiveURL = %q, want %q", got.ArchiveURL, want)
+	}
+	if got.ArchiveURLTemplate != "" || got.PlatformNames != nil {
+		t.Errorf("ResolveArchiveURLTemplate() left template fields set: %+v", got)
+	}
+}
+
+func TestResolveArchiveURLTemplateUnsupportedPlatform(t *testing.T) {
+	dep := Dependency{
+		Name:               "onnxruntime",
+		ArchiveURLTemplate: "https://example.com/onnxruntime-{platform}-1.28.0.tgz",
+		PlatformNames:      map[string]string{"darwin/arm64": "osx-arm64"},
+	}
+	if _, err := dep.ResolveArchiveURLTemplate("plan9", "mips"); err == nil {
+		t.Error("ResolveArchiveURLTemplate() for an unsupported platform: expected an error, got nil")
+	}
+}

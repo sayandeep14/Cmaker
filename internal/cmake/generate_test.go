@@ -143,6 +143,170 @@ func TestGenerateDependencyGitURLAndDownloadOnly(t *testing.T) {
 	}
 }
 
+func TestGenerateDependencyPostFetchExtra(t *testing.T) {
+	content := mustGenerate(t, config.Config{
+		ProjectName: "crowproj",
+		CppVersion:  17,
+		Executable:  "main",
+		Dependencies: []config.Dependency{
+			{Name: "asio", Repo: "chriskohlhoff/asio", Tag: "asio-1-30-2", DownloadOnly: true,
+				PostFetchExtra: "if(asio_ADDED AND NOT TARGET asio::asio)\n  add_library(asio::asio INTERFACE IMPORTED)\nendif()"},
+			{Name: "Crow", Repo: "CrowCpp/Crow", Tag: "v1.2.0", Link: []string{"Crow::Crow"}},
+		},
+	})
+
+	if !strings.Contains(content, "if(asio_ADDED AND NOT TARGET asio::asio)") {
+		t.Errorf("expected post_fetch_extra content to appear in the generated CMakeLists.txt:\n%s", content)
+	}
+
+	// post_fetch_extra must land between its own dependency's
+	// CPMAddPackage() and the next dependency's, not after every
+	// dependency (that's what cmake_extra is for) - the whole point is
+	// letting a later dependency's own find_package() see it during ITS
+	// fetch.
+	ownFetchIdx := strings.Index(content, "NAME asio")
+	postFetchIdx := strings.Index(content, "if(asio_ADDED AND NOT TARGET asio::asio)")
+	nextFetchIdx := strings.Index(content, "NAME Crow")
+	if ownFetchIdx == -1 || postFetchIdx == -1 || nextFetchIdx == -1 {
+		t.Fatalf("missing expected content, got ownFetchIdx=%d postFetchIdx=%d nextFetchIdx=%d:\n%s", ownFetchIdx, postFetchIdx, nextFetchIdx, content)
+	}
+	if !(ownFetchIdx < postFetchIdx && postFetchIdx < nextFetchIdx) {
+		t.Errorf("expected order NAME asio < post_fetch_extra < NAME Crow, got %d, %d, %d:\n%s", ownFetchIdx, postFetchIdx, nextFetchIdx, content)
+	}
+}
+
+func TestGenerateSystemPackageDependency(t *testing.T) {
+	content := mustGenerate(t, config.Config{
+		ProjectName: "cvproj",
+		CppVersion:  17,
+		Executable:  "main",
+		Dependencies: []config.Dependency{
+			{Name: "opencv", Kind: config.DependencyKindSystemPackage, FindPackage: "OpenCV", Link: []string{"${OpenCV_LIBS}"}},
+		},
+	})
+
+	if !strings.Contains(content, "find_package(OpenCV REQUIRED)") {
+		t.Errorf("expected find_package(OpenCV REQUIRED):\n%s", content)
+	}
+	if strings.Contains(content, "CPMAddPackage") {
+		t.Errorf("a system_package dependency should never emit CPMAddPackage:\n%s", content)
+	}
+}
+
+func TestGeneratePkgConfigDependency(t *testing.T) {
+	content := mustGenerate(t, config.Config{
+		ProjectName: "gtkproj",
+		CppVersion:  17,
+		Executable:  "main",
+		Dependencies: []config.Dependency{
+			{Name: "gtkmm", Kind: config.DependencyKindPkgConfig, PkgConfigModule: "gtkmm-4.0", Link: []string{"PkgConfig::GTKMM"}},
+		},
+	})
+
+	for _, want := range []string{
+		"find_package(PkgConfig REQUIRED)",
+		"pkg_check_modules(GTKMM REQUIRED IMPORTED_TARGET gtkmm-4.0)",
+		"target_link_libraries(main PRIVATE PkgConfig::GTKMM)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("pkg_config wiring missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "CPMAddPackage") || strings.Contains(content, "find_package(gtkmm") {
+		t.Errorf("a pkg_config dependency should use neither CPMAddPackage nor find_package(<name>):\n%s", content)
+	}
+}
+
+func TestGeneratePkgConfigOnlySkipsCPMBootstrap(t *testing.T) {
+	content := mustGenerate(t, config.Config{
+		ProjectName: "gtkproj",
+		CppVersion:  17,
+		Executable:  "main",
+		Dependencies: []config.Dependency{
+			{Name: "gtkmm", Kind: config.DependencyKindPkgConfig, PkgConfigModule: "gtkmm-4.0", Link: []string{"PkgConfig::GTKMM"}},
+		},
+	})
+	if strings.Contains(content, "CPM_DOWNLOAD_VERSION") {
+		t.Errorf("a project with only pkg_config dependencies should not bootstrap CPM.cmake:\n%s", content)
+	}
+}
+
+func TestGenerateSystemPackageOnlySkipsCPMBootstrap(t *testing.T) {
+	content := mustGenerate(t, config.Config{
+		ProjectName: "cvproj",
+		CppVersion:  17,
+		Executable:  "main",
+		Dependencies: []config.Dependency{
+			{Name: "opencv", Kind: config.DependencyKindSystemPackage, FindPackage: "OpenCV", Link: []string{"${OpenCV_LIBS}"}},
+		},
+	})
+	if strings.Contains(content, "CPM_DOWNLOAD_VERSION") {
+		t.Errorf("a project with only system_package dependencies should not bootstrap CPM.cmake:\n%s", content)
+	}
+}
+
+func TestGenerateMixedCPMAndSystemPackageStillBootstrapsCPM(t *testing.T) {
+	content := mustGenerate(t, config.Config{
+		ProjectName: "mixedproj",
+		CppVersion:  17,
+		Executable:  "main",
+		Dependencies: []config.Dependency{
+			{Name: "fmt", Repo: "fmtlib/fmt", Tag: "11.2.0", Link: []string{"fmt::fmt"}},
+			{Name: "opencv", Kind: config.DependencyKindSystemPackage, FindPackage: "OpenCV", Link: []string{"${OpenCV_LIBS}"}},
+		},
+	})
+	if !strings.Contains(content, "CPM_DOWNLOAD_VERSION") {
+		t.Errorf("expected CPM.cmake bootstrap when at least one cpm-kind dependency is present:\n%s", content)
+	}
+	if !strings.Contains(content, "CPMAddPackage(") {
+		t.Errorf("expected the cpm-kind dependency to still use CPMAddPackage:\n%s", content)
+	}
+	if !strings.Contains(content, "find_package(OpenCV REQUIRED)") {
+		t.Errorf("expected the system_package dependency to still use find_package:\n%s", content)
+	}
+}
+
+func TestGeneratePrebuiltArchiveDependency(t *testing.T) {
+	content := mustGenerate(t, config.Config{
+		ProjectName: "onnxproj",
+		CppVersion:  17,
+		Executable:  "main",
+		Dependencies: []config.Dependency{
+			{
+				Name:              "onnxruntime",
+				Kind:              config.DependencyKindPrebuiltArchive,
+				ArchiveURL:        "https://example.com/onnxruntime-osx-arm64-1.19.2.tgz",
+				ArchiveIncludeDir: "include",
+				ArchiveLibDir:     "lib",
+				Link:              []string{"onnxruntime"},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`file(DOWNLOAD "https://example.com/onnxruntime-osx-arm64-1.19.2.tgz"`,
+		"file(ARCHIVE_EXTRACT INPUT",
+		"file(GLOB ONNXRUNTIME_ROOT_CANDIDATES",
+		"add_library(onnxruntime INTERFACE IMPORTED)",
+		`target_include_directories(onnxruntime INTERFACE "${ONNXRUNTIME_ROOT}/include")`,
+		"target_link_libraries(onnxruntime INTERFACE ${ONNXRUNTIME_LIBS})",
+		"-Wl,-rpath,${ONNXRUNTIME_ROOT}/lib",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("prebuilt_archive wiring missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "CPMAddPackage") || strings.Contains(content, "find_package(onnxruntime") {
+		t.Errorf("a prebuilt_archive dependency should use neither CPMAddPackage nor find_package:\n%s", content)
+	}
+
+	// The download/extract must only happen once - guarded by the extract
+	// directory's own existence, not re-run on every configure.
+	if !strings.Contains(content, "if(NOT EXISTS ${ONNXRUNTIME_EXTRACT_DIR})") {
+		t.Errorf("expected the download+extract to be guarded by the extract dir's existence:\n%s", content)
+	}
+}
+
 func TestGenerateSanitizersAndWarnings(t *testing.T) {
 	content := mustGenerate(t, config.Config{
 		ProjectName:      "sanproj",

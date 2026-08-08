@@ -1,0 +1,40 @@
+name: crow
+description: Minimal C++ HTTP backend service using the Crow micro web framework, fetched via CPM
+cpp_version: 17
+dependencies:
+  # Crow's own CMakeLists.txt calls find_package(asio REQUIRED), which has
+  # no built-in fetch mechanism for asio itself. Fetching standalone asio
+  # here (DOWNLOAD_ONLY, no CMakeLists.txt of its own to add_subdirectory)
+  # and directly pre-creating the asio::asio target Crow's find_package
+  # would otherwise create - rather than only pre-setting ASIO_INCLUDE_DIR
+  # and hoping find_path()'s cache-vs-normal-variable shadowing resolves
+  # the way Crow's Findasio.cmake needs - sidesteps that entirely: Crow's
+  # own Findasio.cmake only creates the target `if(... NOT TARGET
+  # asio::asio)`, so pre-creating it here makes that block a harmless
+  # no-op regardless of whether its own find_path search succeeds.
+  - name: asio
+    repo: chriskohlhoff/asio
+    tag: asio-1-30-2
+    download_only: true
+    post_fetch_extra: |
+      if(asio_ADDED AND NOT TARGET asio::asio)
+        add_library(asio::asio INTERFACE IMPORTED)
+        target_include_directories(asio::asio INTERFACE ${asio_SOURCE_DIR}/asio/include)
+        target_compile_definitions(asio::asio INTERFACE ASIO_STANDALONE)
+        find_package(Threads REQUIRED)
+        target_link_libraries(asio::asio INTERFACE Threads::Threads)
+      endif()
+  - name: Crow
+    repo: CrowCpp/Crow
+    tag: v1.2.0
+    link: [Crow::Crow]
+    post_fetch_extra: |
+      # Crow's own http_server.h calls std::this_thread::yield() without
+      # including <thread> itself - works by accident whenever something
+      # else transitively includes <thread> first, but fails as a real
+      # compiler error at some C++ standards/stdlib combinations. Force-
+      # including <thread> for every translation unit that links Crow
+      # works around Crow's own bug regardless of what else is included.
+      if(TARGET Crow)
+        target_compile_options(Crow INTERFACE "-include" "thread")
+      endif()

@@ -1,0 +1,39 @@
+name: imgui
+description: Dear ImGui immediate-mode GUI window (GLFW + OpenGL3 backend), fetched via CPM
+cpp_version: 17
+dependencies:
+  - name: glfw
+    repo: glfw/glfw
+    tag: 3.4
+    link: [glfw]
+    options:
+      - "GLFW_BUILD_DOCS OFF"
+      - "GLFW_BUILD_TESTS OFF"
+      - "GLFW_BUILD_EXAMPLES OFF"
+  # Dear ImGui ships no CMakeLists.txt of its own for the core library - it's
+  # meant to be compiled directly into a consumer's build, so it's fetched
+  # with DOWNLOAD_ONLY and wrapped in a plain STATIC target built from
+  # exactly the core sources plus the GLFW+OpenGL3 backend. imgui's
+  # backends/ directory has many other backends (DX11, Vulkan, ...) that
+  # must not be globbed in - only the two files this template actually uses.
+  - name: imgui
+    repo: ocornut/imgui
+    tag: v1.91.0
+    download_only: true
+    post_fetch_extra: |
+      find_package(OpenGL REQUIRED)
+      if(imgui_ADDED AND NOT TARGET imgui)
+        add_library(imgui STATIC
+          ${imgui_SOURCE_DIR}/imgui.cpp
+          ${imgui_SOURCE_DIR}/imgui_draw.cpp
+          ${imgui_SOURCE_DIR}/imgui_tables.cpp
+          ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+          ${imgui_SOURCE_DIR}/imgui_demo.cpp
+          ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+          ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+        )
+        target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+        target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+      endif()
+link_libraries:
+  - imgui

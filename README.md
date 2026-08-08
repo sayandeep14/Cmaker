@@ -30,6 +30,7 @@ Hello from Cmaker!
 - [Library project targets](#library-project-targets)
 - [Dependencies (fetched automatically via CPM)](#dependencies-fetched-automatically-via-cpm)
 - [Package install (a real dependency manager UX)](#package-install-a-real-dependency-manager-ux)
+  - [Beyond CPM: system packages and prebuilt SDKs](#beyond-cpm-system-packages-and-prebuilt-sdks)
   - [Supply-chain auditing (`cmaker audit`)](#supply-chain-auditing-cmaker-audit)
 - [Extensibility: your own templates and registry entries](#extensibility-your-own-templates-and-registry-entries)
 - [Compiler selection](#compiler-selection)
@@ -45,6 +46,8 @@ Hello from Cmaker!
 - [Code generation (`generate accessors`)](#code-generation-generate-accessors)
 - [Build/run logs and AI-assisted healing (`cmaker logs` / `cmaker heal`)](#buildrun-logs-and-ai-assisted-healing-cmaker-logs--cmaker-heal)
 - [Natural-language scaffolding (`--describe`)](#natural-language-scaffolding---describe)
+  - [Going further: `--improvise`](#going-further---improvise)
+- [Explaining your code (`cmaker explain`)](#explaining-your-code-cmaker-explain)
 - [The interactive dashboard (TUI)](#the-interactive-dashboard-tui)
 - [Shell completions](#shell-completions)
 - [Global flags](#global-flags)
@@ -192,13 +195,29 @@ of this writing:
 | `sfml` | SFML 2D game/graphics window, fetched via CPM |
 | `raylib` | raylib window + game loop, fetched via CPM |
 | `catch2` | Catch2 v3 test scaffold, fetched via CPM |
+| `googletest` | GoogleTest test scaffold, fetched via CPM |
 | `headeronly` | A header-only library skeleton (`include/` + a demo consumer in `src/`) |
 | `ml-eigen` | Eigen (linear algebra) numerics starter, fetched via CPM |
 | `backend` | A minimal real HTTP service using cpp-httplib, fetched via CPM |
+| `crow` | A minimal real HTTP service using the Crow micro web framework, fetched via CPM |
+| `imgui` | Dear ImGui immediate-mode GUI window (GLFW + OpenGL3 backend), fetched via CPM |
+| `llama-cpp` | LLM inference starter using llama.cpp's C API, fetched via CPM (no model download needed to build/run the demo) |
+| `oatpp` | A minimal real HTTP service using the Oat++ web framework, fetched via CPM |
+| `wxwidgets` | wxWidgets native GUI window, fetched via CPM |
+| `boost-beast` | A minimal real HTTP service using Boost.Beast, installed via your system package manager (brew/apt) |
+| `opencv` | Computer vision starter using OpenCV, installed via your system package manager (brew/apt) |
+| `drogon` | A minimal real HTTP service using the Drogon web framework, fetched via CPM |
+| `onnxruntime` | ONNX Runtime inference starter, fetched as a platform-matched prebuilt release archive |
+| `gtkmm` | GTKmm native GUI window, installed via your system package manager (brew/apt) |
 
 ```bash
 cmaker new mygame --template=raylib
 ```
+
+These domain templates are the first slice of a much larger planned
+library (GUI/audio/backend/ML frameworks beyond what's here today) — see
+`ROADMAP.md` §26 for what's next and why some frameworks (JUCE, libtorch,
+TensorRT, ...) need more than a template to add well.
 
 `--lang`, `--with-rust`, and `--with-zig` (see below) currently only compose
 with `--template=default` — the other templates are concrete C++ dependency
@@ -281,6 +300,18 @@ it up on the next run. `repo:` accepts either the GitHub `"owner/repo"`
 shorthand or a full git URL (needed for repos not on GitHub, e.g. Eigen's
 GitLab home) — `cmaker` picks the right CPM keyword automatically.
 
+A dependency entry can also set `post_fetch_extra:` — raw CMake emitted
+immediately after *that* dependency's `CPMAddPackage()` call, before the
+next one. This is for the rarer case where a later dependency's own
+`CMakeLists.txt` does a `find_package()` during its own fetch that needs
+something from an earlier dependency's fetch result already in place (the
+`crow` template uses this to pre-create the `asio::asio` target Crow's own
+build expects to find). For everything else — a dependency's own
+`CMakeLists.txt` isn't meant to be `add_subdirectory`'d directly, and needs
+wiring up manually (`ml-eigen`, `imgui`) — `download_only: true` plus the
+project-level `cmake_extra:` (which runs once, after every dependency has
+already fetched) is usually the right tool instead.
+
 ---
 
 ## Package install (a real dependency manager UX)
@@ -297,12 +328,27 @@ cmaker uninstall nlohmann-json
 ```
 
 `cmaker install <name>` looks `<name>` up in cmaker's built-in registry (a
-small, curated list of well-behaved CPM-friendly libraries — currently
-`fmt`, `spdlog`, `nlohmann-json`, `cxxopts`, `catch2`, `googletest`),
-appends the resolved dependency to `cmaker.yaml`, and reconfigures right
-away so the fetch happens immediately (like `npm install`/`cargo add`), not
-silently deferred to the next build. An unknown name gets a clear error
-with close-match suggestions instead of a dead end.
+curated list of well-behaved libraries — general-purpose ones like `fmt`,
+`spdlog`, `nlohmann-json`, `cxxopts`, `catch2`, `googletest`, `benchmark`,
+plus every library the domain templates use — `httplib`, `crow`, `oatpp`,
+`raylib`, `sfml`, `glfw`, `imgui`, `wxwidgets`, `eigen`, `llama-cpp`,
+`boost`, `opencv`, `onnxruntime` — independently installable into any
+existing project, not just via `cmaker new --template=<name>`; run
+`cmaker search <term>` for the full, current list), appends the resolved
+dependency to `cmaker.yaml`, and reconfigures right away so the fetch
+happens immediately (like `npm install`/`cargo add`), not silently
+deferred to the next build. An unknown name gets a clear error with
+close-match suggestions instead of a dead end.
+
+A registry entry can also `require:` other entries, installed first,
+automatically, in the right order — `cmaker install crow` also installs
+`asio` (Crow's own build needs it), and `cmaker install imgui` also
+installs `glfw`. Anything already present in `cmaker.yaml` is skipped
+rather than re-added. `cmaker uninstall <name>` only ever removes the
+exact name you give it — a prerequisite installed this way is left in
+place (the same way most package managers treat transitive dependencies
+by default), so `cmaker uninstall crow` leaves `asio` installed until you
+remove it yourself too, if nothing else needs it.
 
 For anything not in the registry, `--git` is the escape hatch — any
 git-hosted library with a real `CMakeLists.txt`:
@@ -310,6 +356,63 @@ git-hosted library with a real `CMakeLists.txt`:
 ```bash
 cmaker install mylib --git=https://github.com/me/mylib --tag=v1.0.0 --link=mylib::mylib
 ```
+
+### Beyond CPM: system packages and prebuilt SDKs
+
+Not every real library is a CPM-friendly git repo — some are too large to
+realistically build from source (OpenCV), some are only distributed as
+prebuilt binaries (ONNX Runtime), and some ship no CMake integration
+whatsoever, only a pkg-config file (GTK/GTKmm — confirmed by actually
+inspecting a real Homebrew `gtkmm4` install, not assumed). `cmaker install`
+handles all three, still in one command:
+
+```bash
+cmaker install opencv       # shells out to brew/apt to install it, then wires in find_package(OpenCV)
+cmaker install onnxruntime  # downloads+extracts the right prebuilt release for your platform at configure time
+cmaker install gtkmm        # shells out to brew/apt, then wires in via pkg-config (no CMake config exists to find_package)
+```
+
+A registry entry's `kind:` decides which of the four acquisition shapes
+`cmaker install <name>` uses — this is entirely data (`internal/registry/
+entries.yaml`), not something you choose per-invocation:
+
+- **`cpm`** (the default, unmarked in `entries.yaml`) — `fmt`,
+  `nlohmann-json`, etc. Exactly what `cmaker install` has always done.
+- **`system_package`** — `opencv`. Shells out to whichever of Homebrew
+  (macOS) or apt (Debian/Ubuntu) is actually on `PATH` (checked in that
+  order; the install genuinely runs, streamed to your terminal, before
+  anything is written to `cmaker.yaml`), then wires the result in via
+  `find_package(<name> REQUIRED)` instead of fetching source. Windows
+  (vcpkg/choco) isn't wired up yet.
+- **`pkg_config`** — `gtkmm`. Same real package-manager install as
+  `system_package`, but wired in via `find_package(PkgConfig)` +
+  `pkg_check_modules(... IMPORTED_TARGET ...)` instead of CMake's own
+  `find_package(<name>)` — for libraries with no CMake package config at
+  all. The resulting CMake target is always `PkgConfig::<NAME>` (derived
+  from the dependency's own name, uppercased), not the
+  `Namespace::target` shape a real CMake config package would give you.
+- **`prebuilt_archive`** — `onnxruntime`. Downloads and extracts a
+  platform-matched release archive at CMake configure time (via CMake's
+  own `file(DOWNLOAD)`/`file(ARCHIVE_EXTRACT)` — no extra tooling needed),
+  then wires it in as a plain imported target built from the extracted
+  `include`/`lib` directories. Only one variant is fetched per platform
+  today (e.g. ONNX Runtime's CPU build) — no interactive prompt yet for
+  SDKs that ship multiple variants (CPU vs. CUDA, etc.).
+
+`cmaker doctor` reports which `system_package`- and `pkg_config`-kind
+registry entries are already installed on your machine, the same way it
+already reports detected compilers.
+
+The `opencv`/`onnxruntime`/`drogon`/`gtkmm` **templates** use these same
+mechanisms, not just `cmaker install` — a template's `meta.yaml` can
+declare a `system_package`-, `pkg_config`-, or `prebuilt_archive`-kind
+dependency directly, and `cmaker new` runs the exact same real
+package-manager install (or platform-URL resolution) before scaffolding
+finishes, not just at `cmaker install` time.
+
+Only cmaker's own official vendor sources are ever used — no binaries are
+vendored or redistributed by cmaker itself, the same posture CPM already
+has for git-hosted libraries.
 
 ### The lockfile (`cmaker.lock`)
 
@@ -746,6 +849,21 @@ touching `CMakeLists.txt` or your main build at all. The file needs its own
 `main()` and must be self-contained — no linked dependencies get pulled in
 for an ad hoc compile.
 
+`--only` also accepts a glob, compiling (and, for `run`, running) every
+match as its own independent binary — each still needs its own `main()`,
+same as a single file:
+
+```bash
+cmaker run --only='tests/*.cpp'    # runs every match, not just the first failure
+cmaker build --only='tests/*.cpp'  # compiles every match, reports each binary
+```
+
+A single match behaves exactly like a plain `--only=file.cpp` always has
+(the program's own exit code is propagated as-is). Multiple matches run
+all of them — the point of a glob like this is seeing every result, the
+same way a real test runner would, not stopping at the first failure —
+then print a pass/fail summary and exit `1` overall if anything failed.
+
 ### Using a custom compile-and-run tool (e.g. `crun`)
 
 Some tools don't behave like a plain compiler — they compile *and* run a
@@ -966,11 +1084,111 @@ those for you, so combining it with an explicit one is a clear error
 rather than a silent override. Works on `cmaker new`, `cmaker init`, and
 `cmaker create`. Requires `ANTHROPIC_API_KEY`.
 
-Unlike `cmaker heal`, there's no separate `--apply` step: the plan is
-printed and then acted on in one command, matching how every other
-`cmaker new` invocation already behaves — scaffolding into a fresh
-directory is inherently low-risk and trivially reversible, unlike patching
-a user's existing source.
+Unlike `cmaker heal`, there's no separate `--apply` step for template
+selection: the plan is printed and then acted on in one command, matching
+how every other `cmaker new` invocation already behaves — scaffolding into
+a fresh directory is inherently low-risk and trivially reversible, unlike
+patching a user's existing source.
+
+### Going further: `--improvise`
+
+`--describe` alone only ever *selects* — it never touches the scaffolded
+template's own code. `--improvise` (only meaningful combined with
+`--describe`) adds two real capabilities on top:
+
+```bash
+cmaker new myapi --describe "a C++ REST API backend using cpp-httplib, with a /health endpoint and a /echo endpoint that echoes back a 'msg' query parameter" --improvise
+```
+
+1. **Clarifying questions, asked first.** Before doing anything, an LLM
+   decides whether your description has enough information to scaffold
+   confidently. If not, it asks up to 4 short questions interactively
+   (single-select, multi-select, or free-text) right in the terminal —
+   your answers get folded into the description used for planning. A
+   reasonably specific description usually skips this entirely.
+2. **The scaffolded code itself gets refined**, not just selected. Once
+   the template is scaffolded, a second LLM call reads its actual source
+   files and proposes real changes to match your description — a new
+   route, real logic instead of a placeholder, whatever the description
+   actually asked for beyond what the template starts with. This is shown
+   as a diff and **requires an explicit `y` before anything is written**:
+
+   ```
+   -- Asking claude-sonnet-5 to refine the scaffold...
+   --- a/src/main.cpp
+   +++ b/src/main.cpp
+   @@ -12,6 +12,15 @@
+   +    svr.Get("/echo", [](const httplib::Request &req, httplib::Response &res) {
+   +        if (req.has_param("msg")) {
+   +            res.set_content(req.get_param_value("msg"), "text/plain");
+   +        ...
+   -- Apply these changes? [y/N]
+   ```
+
+This is a **deliberate departure** from the "LLM only ever selects from a
+known-good menu, cmaker's own code executes it" principle every other
+AI-assisted command in cmaker holds to — modifying scaffold content is
+asking the LLM to author real code. The confirmation gate reflects that:
+unlike plan-selection (low-risk, trivially reversible — delete the
+directory and retry), this is a bigger claim on reversibility, so it gets
+shown and confirmed, the same posture `cmaker heal --apply` already has
+for patching existing code. Declining leaves the scaffold exactly as
+`--describe` alone would have produced it.
+
+Applying writes each changed file's proposed content directly (not via
+`git apply`) — a freshly scaffolded project isn't a git repository yet,
+and the model's response already contains the exact target content for
+each file, the same "ask for full corrected file content, cmaker computes
+and verifies the diff" machinery `cmaker heal` already established
+(`internal/heal`'s diff computation is shared code, not reinvented here).
+
+`--improvise` defaults to a stronger model (`claude-sonnet-5`) than every
+other AI-assisted command's default (`claude-haiku-4-5`) — multi-turn
+clarification plus real code authorship is a heavier reasoning job than
+single-shot menu selection. `--model` overrides both the plan-selection
+and the improvise model when set.
+
+---
+
+## Explaining your code (`cmaker explain`)
+
+The safest of `cmaker`'s AI-assisted commands: `cmaker explain <target>` asks
+an LLM (Anthropic; requires `ANTHROPIC_API_KEY`) to explain something about
+the current project in plain English. It's a pure read — nothing is ever
+written to disk, and unlike `generate accessors`/`heal`/`--improvise`, the
+model's freeform response is exactly what gets printed; there's no
+structured output to validate and no diff to apply.
+
+```bash
+cmaker explain class=Widget          # explain a class/struct definition
+cmaker explain function=parseConfig  # explain a function/method definition
+cmaker explain file=src/server.cpp   # explain what a whole file does
+cmaker explain dependency=fmt        # explain a registered dependency and how this project actually uses it
+cmaker explain lastError             # explain the most recent build/run failure (see 'cmaker logs')
+cmaker explain diff                  # explain the current working-tree 'git diff'
+cmaker explain config                # explain cmaker.yaml and the generated CMakeLists.txt
+```
+
+- `class=`/`function=` search every source file under the project (skipping
+  `build/`/`.git/`), the same heuristic brace-balancing scan
+  `generate accessors` already uses for classes (`internal/codegen`), plus a
+  new equivalent scanner for function/method *definitions* specifically —
+  not declarations, and not call sites. If the name isn't found anywhere,
+  you're told so directly: `Class "Foo" not found in the current project.`
+  If it matches more than once (a project can legitimately have same-named
+  classes/functions in different files), you're shown each match's file and
+  asked which one you meant before anything is sent to the model.
+- `dependency=<name>` combines the registry's one-line description with
+  actual `#include` usage found in your project's source, so the
+  explanation covers both what the library is and how *this* project uses
+  it — not just a canned description.
+- `lastError` reuses the exact same log + referenced-file scoping
+  `cmaker heal` uses (`internal/heal.ExtractReferencedFiles`), but asks the
+  model to explain the failure rather than propose a fix.
+
+```bash
+cmaker explain lastError --model=...   # override the Anthropic model used (default: claude-haiku-4-5)
+```
 
 ---
 
@@ -1046,6 +1264,8 @@ Scaffold a new project into `./<name>` (defaults to `MyProject` if omitted).
 - `--lib` — shorthand for `--target-type=static_library` (see [above](#library-project-targets); only with `--template=default`, cpp)
 - `--target-type string` — `executable`, `static_library`, or `shared_library` (default `"executable"`; only with `--template=default`, cpp)
 - `--describe string` — describe the project in plain English and let an LLM pick the rest for you (see [above](#natural-language-scaffolding---describe); conflicts with the other scaffold flags)
+- `--improvise` — with `--describe`: ask clarifying questions first if needed, then let an LLM refine the scaffolded code itself to match the description (see [above](#going-further---improvise); shows a diff and asks for confirmation before writing anything)
+- `--model string` — override the Anthropic model used for `--describe`/`--improvise` (default: `claude-haiku-4-5-20251001` for planning, `claude-sonnet-5` for `--improvise`)
 - `--with-benchmarks` — add a `bench/` directory wired to Google Benchmark (see [above](#coverage-benchmarks-docs-and-docker))
 - `--with-docs` — scaffold a `Doxyfile` (see [above](#coverage-benchmarks-docs-and-docker))
 - `--with-docker` — scaffold a `Dockerfile` + devcontainer (see [above](#coverage-benchmarks-docs-and-docker))
@@ -1077,7 +1297,7 @@ with a clear error instead of silently picking one.
 
 - `--release` — build with `CMAKE_BUILD_TYPE=Release` (`-O3`)
 - `--compiler string` — override the compiler for this build only
-- `--only string` — compile a single source file ad hoc (see [above](#ad-hoc-single-file-compiles---only))
+- `--only string` — compile a source file or glob (e.g. `'tests/*.cpp'`) ad hoc (see [above](#ad-hoc-single-file-compiles---only))
 - `--jobs int` / `-j` — parallel build jobs (default: number of CPUs, see [above](#build-speed-parallelism-and-compiler-caching))
 - `--member string` — workspace root only: build just this member instead of the whole workspace (see [above](#workspaces-monorepo-support))
 </details>
@@ -1091,7 +1311,7 @@ project (see [above](#library-project-targets)), builds and runs its
 `examples/demo.cpp` demo instead, or fails with a clear error if there
 isn't one.
 
-- `--only string` — compile and run a single source file ad hoc
+- `--only string` — compile and run a source file or glob (e.g. `'tests/*.cpp'`) ad hoc
 - `--compiler string` — compiler to use for `--only`
 - `--runner string` — custom compile-and-run tool to invoke instead (e.g. `crun`), overriding `cmaker.yaml`'s `runner` — applies to `--only` and to a whole-project `run` (see [above](#using-a-custom-compile-and-run-tool-eg-crun))
 - `--member string` — workspace root only: which member to run - required in workspace mode, there's no default (see [above](#workspaces-monorepo-support))
@@ -1130,7 +1350,9 @@ Rebuilds and reruns automatically whenever files in `src/`, `include/`, or
 Checks `cmake`/`make`/`ninja`/`clang++`/`g++`/`vcpkg`/`conan`/`ccache`/
 `sccache`/`clang-format`/`clang-tidy`/`gcovr`/`doxygen`, lists every
 detected compiler toolchain and whether a compiler cache is actively
-wired in, and — only if your project's `cmaker.yaml` declares it needs
+wired in, reports which `system_package`-kind registry entries (see
+[above](#beyond-cpm-system-packages-and-prebuilt-sdks)) are already
+installed, and — only if your project's `cmaker.yaml` declares it needs
 them — checks `cargo`/`rustc`/`zig` too.
 </details>
 
@@ -1207,7 +1429,12 @@ Lists every saved named shortcut for the current project.
 <summary><code>cmaker install &lt;name&gt; [flags]</code></summary>
 
 Adds a dependency (see [above](#package-install-a-real-dependency-manager-ux))
-and fetches it immediately.
+and fetches it immediately - a `cpm`-kind registry entry fetches via CPM as
+always; a `system_package`-kind entry (e.g. `opencv`) installs it via
+brew/apt first; a `prebuilt_archive`-kind entry (e.g. `onnxruntime`)
+resolves and records the right platform's download URL, fetched at the
+next configure (see
+[above](#beyond-cpm-system-packages-and-prebuilt-sdks)).
 
 - `--git string` — install a git-hosted library not in the built-in registry, by URL (requires `--tag`)
 - `--tag string` — git tag/branch to fetch (required with `--git`)
@@ -1278,6 +1505,19 @@ is given.
 - `--kind string` — only consider `build` or `run` failures (default: either, most recent wins)
 - `--model string` — override the Anthropic model used
 - `--apply` — apply the suggested fix (after confirmation, unless reusing an already-reviewed diagnosis) and rebuild to verify it; requires a clean git working tree
+</details>
+
+<details>
+<summary><code>cmaker explain &lt;target&gt; [flags]</code></summary>
+
+Explains something about the current project in plain English (see
+[above](#explaining-your-code-cmaker-explain)). Requires
+`ANTHROPIC_API_KEY`. Never writes anything to disk.
+
+`<target>` is one of `class=<Name>`, `function=<name>`, `file=<path>`,
+`dependency=<name>`, `lastError`, `diff`, or `config`.
+
+- `--model string` — override the Anthropic model used
 </details>
 
 <details>
