@@ -39,6 +39,7 @@ func init() {
 				Root: name, Name: name, Description: *f.Describe,
 				Compiler: *f.Compiler, Runner: *f.Runner,
 				Improvise: *f.Improvise, Model: *f.Model,
+				NoGit: *f.NoGit,
 			})
 		}
 		if err := improviseRequiresDescribe(cmd, *f.Describe); err != nil {
@@ -62,6 +63,10 @@ func init() {
 		if err := scaffoldProject(name, name, selectedTemplate, *f.Lang, *f.Compiler, *f.WithRust, *f.WithZig, *f.Runner, resolveTargetType(*f.TargetType, *f.Lib)); err != nil {
 			return err
 		}
-		return applyExtraScaffolding(name, name, *f.WithBenchmarks, *f.WithDocs, *f.WithDocker)
+		if err := applyExtraScaffolding(name, name, *f.WithBenchmarks, *f.WithDocs, *f.WithDocker); err != nil {
+			return err
+		}
+		maybeInitGit(name, *f.NoGit)
+		return nil
 	}
 }

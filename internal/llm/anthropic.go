@@ -34,6 +34,13 @@ const DefaultModel = "claude-haiku-4-5-20251001"
 // command.
 const DefaultImproviseModel = "claude-sonnet-5"
 
+// DefaultOpusModel is the strongest tier in 'cmaker heal's escalation
+// ladder (haiku, single file -> haiku, expanded context -> sonnet,
+// expanded context -> opus, expanded context) - offered only after every
+// weaker/cheaper tier has already failed to find a fix, and only with
+// explicit per-tier confirmation (see cmd/heal.go).
+const DefaultOpusModel = "claude-opus-5"
+
 const (
 	apiURL     = "https://api.anthropic.com/v1/messages"
 	apiVersion = "2023-06-01"

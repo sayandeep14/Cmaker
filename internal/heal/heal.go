@@ -58,11 +58,15 @@ type Suggestion struct {
 
 // Suggest reads logPath and every file it references in compiler-style
 // "file:line: error" output (bounded to maxReferencedFiles, resolved
-// relative to root), asks completer for each changed file's corrected full
-// content, and returns a unified diff computed deterministically from the
-// before/after content (see diff.go) - never a diff trusted verbatim from
-// the model. Nothing is written to disk - the caller presents the diff.
-func Suggest(ctx context.Context, completer Completer, root, logPath string) (Suggestion, error) {
+// relative to root), plus any paths given in extraFiles (nil for none -
+// used by 'cmaker heal's escalation ladder when the user opts into
+// expanding context beyond what the log itself points at, see
+// SuggestRelatedFiles), asks completer for each changed file's corrected
+// full content, and returns a unified diff computed deterministically
+// from the before/after content (see diff.go) - never a diff trusted
+// verbatim from the model. Nothing is written to disk - the caller
+// presents the diff.
+func Suggest(ctx context.Context, completer Completer, root, logPath string, extraFiles []string) (Suggestion, error) {
 	logData, err := os.ReadFile(logPath)
 	if err != nil {
 		return Suggestion{}, fmt.Errorf("failed to read %s: %w", logPath, err)
@@ -73,8 +77,19 @@ func Suggest(ctx context.Context, completer Completer, root, logPath string) (Su
 	}
 
 	referenced := ExtractReferencedFiles(logText, maxReferencedFiles)
-	if len(referenced) == 0 {
+	if len(referenced) == 0 && len(extraFiles) == 0 {
 		return Suggestion{}, fmt.Errorf("couldn't find any file:line error references in %s - nothing to scope the request to", logPath)
+	}
+
+	seen := make(map[string]bool, len(referenced)+len(extraFiles))
+	for _, f := range referenced {
+		seen[f] = true
+	}
+	for _, f := range extraFiles {
+		if !seen[f] {
+			referenced = append(referenced, f)
+			seen[f] = true
+		}
 	}
 
 	var b strings.Builder

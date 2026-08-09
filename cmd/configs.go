@@ -18,6 +18,16 @@ import (
 var addCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Add a project-scoped item (currently: config)",
+	Long: "Add a project-scoped item - cmaker's own meaning for 'add', unrelated to git's. For\n" +
+		"git's add (stage changes), use --git: 'cmaker add --git -A' forwards straight to 'git\n" +
+		"add -A', bypassing this command's own subcommands entirely.",
+}
+
+func init() {
+	// Handled entirely by maybeDispatchGitOverride in git.go, before cobra
+	// ever parses this command's flags - registered here only so `cmaker
+	// add --help` documents it exists.
+	addCmd.Flags().Bool("git", false, "forward to 'git add' instead (with any other flags/paths given)")
 }
 
 var removeCmd = &cobra.Command{

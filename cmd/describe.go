@@ -21,6 +21,7 @@ type describeOptions struct {
 	Root, Name, Description, Compiler, Runner string
 	Improvise                                 bool
 	Model                                     string // overrides both the plan-selection and (if Improvise) the improvise model when non-empty
+	NoGit                                     bool
 }
 
 // runDescribeAndScaffold turns a natural-language description into a Plan
@@ -106,10 +107,18 @@ func runDescribeAndScaffold(opts describeOptions) error {
 		}
 	}
 
-	if !opts.Improvise {
-		return nil
+	if opts.Improvise {
+		if err := improviseScaffold(improviseClient, finalDescription, plan.Reasoning); err != nil {
+			return err
+		}
 	}
-	return improviseScaffold(improviseClient, finalDescription, plan.Reasoning)
+
+	// "." here, not opts.Root - the chdir above (when opts.Root wasn't
+	// already ".") already moved into the scaffolded project, so this
+	// picks up the *final* state (including any --improvise refinement)
+	// for the initial commit, not a stale pre-improvise snapshot.
+	maybeInitGit(".", opts.NoGit)
+	return nil
 }
 
 // improviseScaffold asks an LLM to refine the just-scaffolded project's own

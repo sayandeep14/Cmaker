@@ -38,7 +38,7 @@ func TestSuggestReturnsComputedDiff(t *testing.T) {
 
 	fc := &fakeCompleter{response: "--- file: src/main.cpp ---\nint main() { return 0; }\n"}
 
-	got, err := Suggest(context.Background(), fc, dir, logPath)
+	got, err := Suggest(context.Background(), fc, dir, logPath, nil)
 	if err != nil {
 		t.Fatalf("Suggest() error = %v", err)
 	}
@@ -77,7 +77,7 @@ func TestSuggestHandlesAbsolutePathInLog(t *testing.T) {
 	// absolute path in a diff header outright ("invalid path"), caught via
 	// a live end-to-end test against a real failing build.
 	fc := &fakeCompleter{response: "--- file: src/main.cpp ---\nint main() { return 0; }\n"}
-	got, err := Suggest(context.Background(), fc, dir, logPath)
+	got, err := Suggest(context.Background(), fc, dir, logPath, nil)
 	if err != nil {
 		t.Fatalf("Suggest() error = %v", err)
 	}
@@ -109,7 +109,7 @@ func TestSuggestStripsStrayCodeFenceFromFileBlock(t *testing.T) {
 	writeFile(t, logPath, "src/main.cpp:1:15: error: use of undeclared identifier 'foo'\n")
 
 	fc := &fakeCompleter{response: "--- file: src/main.cpp ---\n```cpp\nint main() { return 0; }\n```\n"}
-	got, err := Suggest(context.Background(), fc, dir, logPath)
+	got, err := Suggest(context.Background(), fc, dir, logPath, nil)
 	if err != nil {
 		t.Fatalf("Suggest() error = %v", err)
 	}
@@ -136,7 +136,7 @@ func TestSuggestStripsStrayTrailingSeparator(t *testing.T) {
 	writeFile(t, logPath, "src/main.cpp:1:15: error: use of undeclared identifier 'foo'\n")
 
 	fc := &fakeCompleter{response: "--- file: src/main.cpp ---\nint main() { return 0; }\n---"}
-	got, err := Suggest(context.Background(), fc, dir, logPath)
+	got, err := Suggest(context.Background(), fc, dir, logPath, nil)
 	if err != nil {
 		t.Fatalf("Suggest() error = %v", err)
 	}
@@ -163,7 +163,7 @@ func TestSuggestStripsStrayFileBlockMarker(t *testing.T) {
 	writeFile(t, logPath, "src/main.cpp:1:15: error: use of undeclared identifier 'foo'\n")
 
 	fc := &fakeCompleter{response: "--- file: src/main.cpp ---\nint main() { return 0; }\n--- file: end ---"}
-	got, err := Suggest(context.Background(), fc, dir, logPath)
+	got, err := Suggest(context.Background(), fc, dir, logPath, nil)
 	if err != nil {
 		t.Fatalf("Suggest() error = %v", err)
 	}
@@ -182,7 +182,7 @@ func TestSuggestNoFixFound(t *testing.T) {
 	writeFile(t, logPath, "src/main.cpp:1:1: error: something inscrutable\n")
 
 	fc := &fakeCompleter{response: "NO_FIX_FOUND"}
-	got, err := Suggest(context.Background(), fc, dir, logPath)
+	got, err := Suggest(context.Background(), fc, dir, logPath, nil)
 	if err != nil {
 		t.Fatalf("Suggest() error = %v", err)
 	}
@@ -198,7 +198,7 @@ func TestSuggestUnrecognizedResponseFormat(t *testing.T) {
 	writeFile(t, logPath, "src/main.cpp:1:1: error: whatever\n")
 
 	fc := &fakeCompleter{response: "I think the fix is to add a semicolon."}
-	if _, err := Suggest(context.Background(), fc, dir, logPath); err == nil {
+	if _, err := Suggest(context.Background(), fc, dir, logPath, nil); err == nil {
 		t.Error("expected an error when the response has no recognizable file blocks")
 	}
 }
@@ -210,7 +210,7 @@ func TestSuggestProposedContentIdenticalToOriginal(t *testing.T) {
 	writeFile(t, logPath, "src/main.cpp:1:1: error: whatever\n")
 
 	fc := &fakeCompleter{response: "--- file: src/main.cpp ---\nint main() {}\n"}
-	got, err := Suggest(context.Background(), fc, dir, logPath)
+	got, err := Suggest(context.Background(), fc, dir, logPath, nil)
 	if err != nil {
 		t.Fatalf("Suggest() error = %v", err)
 	}
@@ -225,7 +225,7 @@ func TestSuggestNoFileReferencesInLog(t *testing.T) {
 	writeFile(t, logPath, "some generic failure with no file:line references\n")
 
 	fc := &fakeCompleter{response: "should not be called"}
-	if _, err := Suggest(context.Background(), fc, dir, logPath); err == nil {
+	if _, err := Suggest(context.Background(), fc, dir, logPath, nil); err == nil {
 		t.Error("expected an error when the log has no file:line references")
 	}
 }
@@ -236,14 +236,14 @@ func TestSuggestReferencedFileMissingOnDisk(t *testing.T) {
 	writeFile(t, logPath, "src/gone.cpp:1:1: error: whatever\n")
 
 	fc := &fakeCompleter{response: "--- file: src/gone.cpp ---\nsomething\n"}
-	if _, err := Suggest(context.Background(), fc, dir, logPath); err == nil {
+	if _, err := Suggest(context.Background(), fc, dir, logPath, nil); err == nil {
 		t.Error("expected an error when none of the referenced files exist on disk")
 	}
 }
 
 func TestSuggestMissingLogFile(t *testing.T) {
 	fc := &fakeCompleter{}
-	if _, err := Suggest(context.Background(), fc, t.TempDir(), "/nonexistent/log.log"); err == nil {
+	if _, err := Suggest(context.Background(), fc, t.TempDir(), "/nonexistent/log.log", nil); err == nil {
 		t.Error("expected an error for a missing log file")
 	}
 }

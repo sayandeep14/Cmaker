@@ -29,6 +29,7 @@ type scaffoldFlagSet struct {
 	WithBenchmarks, WithDocs, WithDocker                   *bool
 	Improvise                                              *bool
 	Model                                                  *string
+	NoGit                                                  *bool
 }
 
 func newScaffoldFlags(c *cobra.Command) *scaffoldFlagSet {
@@ -47,6 +48,7 @@ func newScaffoldFlags(c *cobra.Command) *scaffoldFlagSet {
 	f.WithDocker = c.Flags().Bool("with-docker", false, "scaffold a Dockerfile + .devcontainer/devcontainer.json for building/running without a local toolchain")
 	f.Improvise = c.Flags().Bool("improvise", false, "with --describe: ask clarifying questions first if needed, then let an LLM refine the scaffolded code itself to match the description (shows a diff and asks for confirmation before writing anything)")
 	f.Model = c.Flags().String("model", "", "override the Anthropic model used for --describe/--improvise (default: "+llm.DefaultModel+" for planning, "+llm.DefaultImproviseModel+" for --improvise)")
+	f.NoGit = c.Flags().Bool("nogit", false, "skip auto-initializing a git repository (and initial commit) for the new project")
 	return f
 }
 
@@ -83,7 +85,10 @@ var newCmd = &cobra.Command{
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Scaffold a project into the current directory",
-	Args:  cobra.NoArgs,
+	Long: "Scaffolds a project into the current directory - cmaker's own meaning for 'init',\n" +
+		"unrelated to git's. For git's init, use --git: 'cmaker init --git' forwards straight to\n" +
+		"'git init', bypassing this command's own scaffold flags entirely.",
+	Args: cobra.NoArgs,
 }
 
 func init() {
@@ -101,6 +106,7 @@ func init() {
 				Root: name, Name: name, Description: *newFlags.Describe,
 				Compiler: *newFlags.Compiler, Runner: *newFlags.Runner,
 				Improvise: *newFlags.Improvise, Model: *newFlags.Model,
+				NoGit: *newFlags.NoGit,
 			})
 		}
 		if err := improviseRequiresDescribe(cmd, *newFlags.Describe); err != nil {
@@ -109,10 +115,18 @@ func init() {
 		if err := scaffoldProject(name, name, *newFlags.Template, *newFlags.Lang, *newFlags.Compiler, *newFlags.WithRust, *newFlags.WithZig, *newFlags.Runner, resolveTargetType(*newFlags.TargetType, *newFlags.Lib)); err != nil {
 			return err
 		}
-		return applyExtraScaffolding(name, name, *newFlags.WithBenchmarks, *newFlags.WithDocs, *newFlags.WithDocker)
+		if err := applyExtraScaffolding(name, name, *newFlags.WithBenchmarks, *newFlags.WithDocs, *newFlags.WithDocker); err != nil {
+			return err
+		}
+		maybeInitGit(name, *newFlags.NoGit)
+		return nil
 	}
 
 	initFlags := newScaffoldFlags(initCmd)
+	// Handled entirely by maybeDispatchGitOverride in git.go, before cobra
+	// ever parses this command's flags - registered here only so `cmaker
+	// init --help` documents it exists.
+	initCmd.Flags().Bool("git", false, "forward to 'git init' instead")
 	initCmd.RunE = func(cmd *cobra.Command, args []string) error {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -127,6 +141,7 @@ func init() {
 				Root: ".", Name: name, Description: *initFlags.Describe,
 				Compiler: *initFlags.Compiler, Runner: *initFlags.Runner,
 				Improvise: *initFlags.Improvise, Model: *initFlags.Model,
+				NoGit: *initFlags.NoGit,
 			})
 		}
 		if err := improviseRequiresDescribe(cmd, *initFlags.Describe); err != nil {
@@ -135,7 +150,11 @@ func init() {
 		if err := scaffoldProject(".", name, *initFlags.Template, *initFlags.Lang, *initFlags.Compiler, *initFlags.WithRust, *initFlags.WithZig, *initFlags.Runner, resolveTargetType(*initFlags.TargetType, *initFlags.Lib)); err != nil {
 			return err
 		}
-		return applyExtraScaffolding(".", name, *initFlags.WithBenchmarks, *initFlags.WithDocs, *initFlags.WithDocker)
+		if err := applyExtraScaffolding(".", name, *initFlags.WithBenchmarks, *initFlags.WithDocs, *initFlags.WithDocker); err != nil {
+			return err
+		}
+		maybeInitGit(".", *initFlags.NoGit)
+		return nil
 	}
 }
 
