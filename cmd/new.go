@@ -30,6 +30,7 @@ type scaffoldFlagSet struct {
 	Improvise                                              *bool
 	Model                                                  *string
 	NoGit                                                  *bool
+	Pack                                                   *bool
 }
 
 func newScaffoldFlags(c *cobra.Command) *scaffoldFlagSet {
@@ -49,6 +50,7 @@ func newScaffoldFlags(c *cobra.Command) *scaffoldFlagSet {
 	f.Improvise = c.Flags().Bool("improvise", false, "with --describe: ask clarifying questions first if needed, then let an LLM refine the scaffolded code itself to match the description (shows a diff and asks for confirmation before writing anything)")
 	f.Model = c.Flags().String("model", "", "override the Anthropic model used for --describe/--improvise (default: "+llm.DefaultModel+" for planning, "+llm.DefaultImproviseModel+" for --improvise)")
 	f.NoGit = c.Flags().Bool("nogit", false, "skip auto-initializing a git repository (and initial commit) for the new project")
+	f.Pack = c.Flags().Bool("pack", false, "scaffold a publishable pack (manifest.yaml + starter files for 'cmaker publish') instead of a buildable CMake project")
 	return f
 }
 
@@ -98,6 +100,16 @@ func init() {
 		if len(args) == 1 {
 			name = args[0]
 		}
+		if *newFlags.Pack {
+			if err := packConflictsWithExplicitFlags(cmd); err != nil {
+				return err
+			}
+			if err := scaffoldPack(name, name); err != nil {
+				return err
+			}
+			maybeInitGit(name, *newFlags.NoGit)
+			return nil
+		}
 		if *newFlags.Describe != "" {
 			if err := describeConflictsWithExplicitFlags(cmd); err != nil {
 				return err
@@ -133,6 +145,16 @@ func init() {
 			return fmt.Errorf("failed to determine current directory: %w", err)
 		}
 		name := filepath.Base(cwd)
+		if *initFlags.Pack {
+			if err := packConflictsWithExplicitFlags(cmd); err != nil {
+				return err
+			}
+			if err := scaffoldPack(".", name); err != nil {
+				return err
+			}
+			maybeInitGit(".", *initFlags.NoGit)
+			return nil
+		}
 		if *initFlags.Describe != "" {
 			if err := describeConflictsWithExplicitFlags(cmd); err != nil {
 				return err
