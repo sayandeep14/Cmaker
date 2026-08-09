@@ -4,3 +4,4 @@
 *.test
 /secrets.env
 .nextfeatures
+PACKS_PLAN.md

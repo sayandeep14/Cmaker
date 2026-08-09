@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 
@@ -10,6 +11,8 @@ import (
 
 	"cmaker/internal/cmake"
 	"cmaker/internal/config"
+	"cmaker/internal/docsgen"
+	"cmaker/internal/explain"
 	"cmaker/internal/llm"
 	"cmaker/internal/registry"
 )
@@ -71,15 +74,17 @@ var doctorCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		checkAI, _ := cmd.Flags().GetBool("ai")
-		return runDoctor(checkAI)
+		checkDocs, _ := cmd.Flags().GetBool("docs")
+		return runDoctor(checkAI, checkDocs)
 	},
 }
 
 func init() {
 	doctorCmd.Flags().Bool("ai", false, "also test the configured Anthropic API key with a real request")
+	doctorCmd.Flags().Bool("docs", false, "also scan for Doxygen comment drift (@param mismatches against actual function signatures)")
 }
 
-func runDoctor(checkAI bool) error {
+func runDoctor(checkAI, checkDocs bool) error {
 	fmt.Printf("🩺 OS: %s\n", runtime.GOOS)
 
 	missingRequired := false
@@ -165,11 +170,57 @@ func runDoctor(checkAI bool) error {
 		reportAIStatus()
 	}
 
+	if checkDocs {
+		reportDocDrift()
+	}
+
 	if missingRequired {
 		return fmt.Errorf("one or more required tools are missing")
 	}
 	okf("All required tools are ready.")
 	return nil
+}
+
+// reportDocDrift scans every source file for Doxygen comment blocks
+// whose @param list no longer matches the function/method they document
+// (see internal/docsgen.FindDriftIssues) - fully local and deterministic,
+// no LLM call, unlike --ai. Opt-in via --docs anyway (like --ai) since
+// scanning every file adds real time on a large project and most doctor
+// runs just want the fast environment/toolchain checks. Never contributes
+// to missingRequired/doctor's exit code: stale doc comments are a
+// hygiene issue to fix at leisure, not a reason to call the environment
+// "not ready."
+func reportDocDrift() {
+	fmt.Println(colorize(ansiBold, "Doxygen comment drift:"))
+	files, err := explain.WalkSourceFiles(".")
+	if err != nil {
+		fmt.Printf("  -- %v\n", err)
+		return
+	}
+
+	var allIssues []docsgen.DriftIssue
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		allIssues = append(allIssues, docsgen.FindDriftIssues(f, string(data))...)
+	}
+
+	if len(allIssues) == 0 {
+		fmt.Printf("  -- %s\n", colorize(ansiGreen, "No drift found"))
+		return
+	}
+	for _, issue := range allIssues {
+		fmt.Printf("  -- %s:%d: %s\n", issue.File, issue.Line, colorize(ansiYellow, issue.Signature))
+		if len(issue.Missing) > 0 {
+			fmt.Printf("       documented but no longer a real parameter: %v\n", issue.Missing)
+		}
+		if len(issue.Undocumented) > 0 {
+			fmt.Printf("       real parameter with no @param: %v\n", issue.Undocumented)
+		}
+	}
+	fmt.Printf("  (see 'cmaker document function=<name>|class=<name>' to regenerate a comment)\n")
 }
 
 // reportAIStatus checks whether cmaker's AI-assisted features (heal,
