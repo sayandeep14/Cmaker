@@ -103,6 +103,27 @@ func TestFindClassSingleMatch(t *testing.T) {
 	}
 }
 
+func TestFindClassStartEndBoundBody(t *testing.T) {
+	root := t.TempDir()
+	src := "int before;\nclass Widget {\npublic:\n    void draw();\n};\nint after;\n"
+	writeFile(t, root, "src/widget.hpp", src)
+
+	matches, err := FindClass(root, "Widget")
+	if err != nil {
+		t.Fatalf("FindClass() error = %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("FindClass() = %d matches, want 1", len(matches))
+	}
+	m := matches[0]
+	if src[m.Start:m.End+1] != m.Body {
+		t.Errorf("src[Start:End+1] = %q, want it to equal Body %q", src[m.Start:m.End+1], m.Body)
+	}
+	if !strings.HasPrefix(m.Body, "class Widget") {
+		t.Errorf("Body = %q, want it to start with the class declaration", m.Body)
+	}
+}
+
 func TestFindClassAmbiguousMultipleFiles(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "src/a/widget.hpp", "class Widget { int a; };\n")
@@ -143,6 +164,60 @@ func TestFindFunctionSingleMatch(t *testing.T) {
 	}
 	if !strings.Contains(matches[0].Body, "return a + b;") {
 		t.Errorf("FindFunction() body = %q, missing expected content", matches[0].Body)
+	}
+}
+
+func TestFindFunctionStartEndBoundBody(t *testing.T) {
+	root := t.TempDir()
+	src := "int before;\nint add(int a, int b) {\n    return a + b;\n}\nint after;\n"
+	writeFile(t, root, "src/math.cpp", src)
+
+	matches, err := FindFunction(root, "add")
+	if err != nil {
+		t.Fatalf("FindFunction() error = %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("FindFunction() = %d matches, want 1", len(matches))
+	}
+	m := matches[0]
+	if src[m.Start:m.End+1] != m.Body {
+		t.Errorf("src[Start:End+1] = %q, want it to equal Body %q", src[m.Start:m.End+1], m.Body)
+	}
+	if !strings.HasPrefix(m.Body, "int add(") {
+		t.Errorf("Body = %q, want it to start with the function signature", m.Body)
+	}
+}
+
+// TestFindFunctionStartExcludesPrecedingIncludeDirective is a regression
+// test for a real bug: declStartBackward's character-class scan has no
+// notion of line boundaries, so it could walk straight through an entire
+// preceding "#include <...>" line (its identifiers/angle-brackets/
+// whitespace all match the "plausible return type" character class),
+// stopping one byte past the '#' rather than before it. Harmless for
+// explain/read (Body-only, never spliced anywhere), but caught live once
+// 'cmaker improve' started splicing this exact range back into a real
+// file, producing a corrupted "##include <vector>" line.
+func TestFindFunctionStartExcludesPrecedingIncludeDirective(t *testing.T) {
+	root := t.TempDir()
+	src := "#include <iostream>\n#include <vector>\n\nbool contains(const std::vector<int>& v, int target) {\n    return false;\n}\n"
+	writeFile(t, root, "src/main.cpp", src)
+
+	matches, err := FindFunction(root, "contains")
+	if err != nil {
+		t.Fatalf("FindFunction() error = %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("FindFunction() = %d matches, want 1", len(matches))
+	}
+	m := matches[0]
+	if strings.Contains(m.Body, "#include") {
+		t.Errorf("Body = %q, must not include the preceding #include directive", m.Body)
+	}
+	if !strings.HasPrefix(m.Body, "bool contains(") {
+		t.Errorf("Body = %q, want it to start cleanly with the function signature", m.Body)
+	}
+	if src[m.Start:m.End+1] != m.Body {
+		t.Errorf("src[Start:End+1] = %q, want it to equal Body %q", src[m.Start:m.End+1], m.Body)
 	}
 }
 

@@ -9,15 +9,15 @@ import (
 )
 
 func TestUnifiedDiffIdenticalContent(t *testing.T) {
-	if got := unifiedDiff("x.cpp", "same\n", "same\n"); got != "" {
-		t.Errorf("unifiedDiff() for identical content = %q, want empty", got)
+	if got := UnifiedDiff("x.cpp", "same\n", "same\n"); got != "" {
+		t.Errorf("UnifiedDiff() for identical content = %q, want empty", got)
 	}
 }
 
 func TestUnifiedDiffSimpleChange(t *testing.T) {
 	old := "line1\nline2\nline3\n"
 	new_ := "line1\nCHANGED\nline3\n"
-	got := unifiedDiff("f.cpp", old, new_)
+	got := UnifiedDiff("f.cpp", old, new_)
 
 	for _, want := range []string{
 		"--- a/f.cpp",
@@ -28,7 +28,7 @@ func TestUnifiedDiffSimpleChange(t *testing.T) {
 		" line3", // context
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("unifiedDiff() missing %q:\n%s", want, got)
+			t.Errorf("UnifiedDiff() missing %q:\n%s", want, got)
 		}
 	}
 }
@@ -58,7 +58,7 @@ func TestUnifiedDiffHunkHeaderIsConsistentWithBody(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			diff := unifiedDiff("f.cpp", tc.old, tc.new)
+			diff := UnifiedDiff("f.cpp", tc.old, tc.new)
 			if diff == "" {
 				t.Fatal("expected a non-empty diff for a real content change")
 			}
@@ -72,7 +72,7 @@ func TestUnifiedDiffHunkHeaderIsConsistentWithBody(t *testing.T) {
 
 // verifyPatchApplies actually runs `git apply` against a real file and
 // checks the result matches the expected new content exactly - the
-// strongest possible check that unifiedDiff produces a genuinely valid,
+// strongest possible check that UnifiedDiff produces a genuinely valid,
 // consumable patch, not just diff-shaped text.
 func verifyPatchApplies(t *testing.T, gitPath, oldContent, diff, wantContent string) {
 	t.Helper()

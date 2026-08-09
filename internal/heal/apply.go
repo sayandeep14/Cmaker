@@ -34,7 +34,7 @@ func WorkingTreeClean(root string) (bool, error) {
 
 // Apply runs `git apply` against diff, rooted at root - the same mechanism
 // v1's own printed instructions already told a human to use by hand, just
-// automated. diff.go's unifiedDiff always emits standard a/-b/ prefixed
+// automated. diff.go's UnifiedDiff always emits standard a/-b/ prefixed
 // headers, so this relies on git apply's default -p1 stripping.
 func Apply(root, diff string) error {
 	cmd := exec.Command("git", "-C", root, "apply")

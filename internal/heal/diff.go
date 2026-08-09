@@ -69,14 +69,14 @@ func computeLineDiff(oldLines, newLines []string) []diffOp {
 	return ops
 }
 
-// unifiedDiff renders oldContent -> newContent as a standard unified diff
+// UnifiedDiff renders oldContent -> newContent as a standard unified diff
 // for path (the same shape `git diff`/`diff -u` produce), with hunk-header
 // line numbers computed directly from the edit script rather than trusted
 // from an LLM. Returns "" if the two contents are identical. Deliberately
 // emits a single hunk per file (rather than splitting into several when
 // changes are far apart) - simpler to get exactly right, and more than
 // sufficient for the small, focused fixes this feature targets.
-func unifiedDiff(path, oldContent, newContent string) string {
+func UnifiedDiff(path, oldContent, newContent string) string {
 	if oldContent == newContent {
 		return ""
 	}

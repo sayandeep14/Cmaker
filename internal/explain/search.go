@@ -1,6 +1,7 @@
 package explain
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -53,8 +54,9 @@ func WalkSourceFiles(root string) ([]string, error) {
 // ClassMatch is one occurrence of a class/struct definition found by
 // FindClass, ready to hand straight to BuildClassPrompt.
 type ClassMatch struct {
-	File string // relative to the search root
-	Body string // the class's full definition, brace-to-brace
+	File       string // relative to the search root
+	Body       string // the class's full definition, brace-to-brace
+	Start, End int    // byte offsets within the file's own content ('cmaker improve' needs these to splice a replacement back in; Body == data[Start:End+1])
 }
 
 // FindClass searches every source file under root for a class or struct
@@ -80,7 +82,7 @@ func FindClass(root, className string) ([]ClassMatch, error) {
 			continue
 		}
 		start := classDeclStart(data, className, bodyOpen)
-		matches = append(matches, ClassMatch{File: f, Body: string(data[start : bodyClose+1])})
+		matches = append(matches, ClassMatch{File: f, Body: string(data[start : bodyClose+1]), Start: start, End: bodyClose})
 	}
 	return matches, nil
 }
@@ -90,8 +92,9 @@ func FindClass(root, className string) ([]ClassMatch, error) {
 // distinctly from codegen.FunctionMatch (which carries byte offsets, not
 // resolved content) to avoid confusion between the two.
 type FuncMatch struct {
-	File string // relative to the search root
-	Body string // the function's full body, brace-to-brace
+	File       string // relative to the search root
+	Body       string // the function's full body, brace-to-brace
+	Start, End int    // byte offsets within the file's own content ('cmaker improve' needs these to splice a replacement back in; Body == data[Start:End+1])
 }
 
 // FindFunction searches every source file under root for definitions
@@ -113,7 +116,7 @@ func FindFunction(root, funcName string) ([]FuncMatch, error) {
 		}
 		for _, m := range codegen.FindFunctionDefinitions(data, funcName) {
 			start := declStartBackward(data, m.NameStart)
-			matches = append(matches, FuncMatch{File: f, Body: string(data[start : m.BodyClose+1])})
+			matches = append(matches, FuncMatch{File: f, Body: string(data[start : m.BodyClose+1]), Start: start, End: m.BodyClose})
 		}
 	}
 	return matches, nil
@@ -153,6 +156,19 @@ var declStartAllowedRe = regexp.MustCompile(`[A-Za-z0-9_:*&~<>,\[\] \t\r\n]`)
 // "ClassName::", qualifiers) FunctionMatch's own BodyOpen/BodyClose
 // intentionally don't carry - same rationale as classDeclStart above,
 // caught by the same live-testing check.
+//
+// The character-class scan has no notion of line boundaries, so on its
+// own it can walk straight through an entire unrelated preceding
+// preprocessor directive (#include, #define, ...) - that line's own text
+// (identifiers, "<angle brackets>", whitespace) happens to match the same
+// "plausible return type" character class, so the scan doesn't stop until
+// it hits the '#' itself - but since '#' isn't itself in the allowed set,
+// the scan halts having already stepped past it, landing mid-directive
+// rather than before it entirely. A real bug caught live once 'cmaker
+// improve' started splicing this range back into a file (harmless for
+// explain/read, which only ever display Body, but a literal "##include"
+// corruption once something actually writes at this offset).
+// skipPastLeadingDirectives corrects for that.
 func declStartBackward(src []byte, nameStart int) int {
 	i := nameStart
 	for i > 0 && declStartAllowedRe.Match(src[i-1:i]) {
@@ -161,5 +177,40 @@ func declStartBackward(src []byte, nameStart int) int {
 	for i < nameStart && (src[i] == ' ' || src[i] == '\t' || src[i] == '\r' || src[i] == '\n') {
 		i++
 	}
-	return i
+	return skipPastLeadingDirectives(src, i, nameStart)
+}
+
+// skipPastLeadingDirectives corrects declStartBackward's character-class
+// scan for the case where it stopped mid-way through a preceding '#'-
+// prefixed preprocessor directive line (see declStartBackward's own doc).
+// Recovers the true start of the line start is currently inside, then
+// skips forward past every leading '#'-prefixed line found there (there
+// can be more than one, e.g. consecutive #include lines), up to limit.
+func skipPastLeadingDirectives(src []byte, start, limit int) int {
+	lineStart := 0
+	if idx := bytes.LastIndexByte(src[:start], '\n'); idx != -1 {
+		lineStart = idx + 1
+	}
+
+	pos := lineStart
+	for pos < limit {
+		lineEnd := limit
+		next := limit
+		if nl := bytes.IndexByte(src[pos:limit], '\n'); nl != -1 {
+			lineEnd = pos + nl
+			next = lineEnd + 1
+		}
+		line := bytes.TrimSpace(src[pos:lineEnd])
+		if len(line) == 0 || line[0] != '#' {
+			break
+		}
+		pos = next
+	}
+	if pos <= start {
+		return start
+	}
+	for pos < limit && (src[pos] == ' ' || src[pos] == '\t' || src[pos] == '\r' || src[pos] == '\n') {
+		pos++
+	}
+	return pos
 }

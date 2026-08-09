@@ -108,42 +108,58 @@ type explainMatch interface {
 	explain.ClassMatch | explain.FuncMatch
 }
 
-// buildAmbiguousPrompt runs find(".", name) and turns the result into a
-// single prompt string via buildPrompt: zero matches is reported as "not
-// found in the current project" (the exact wording requested for class=/
-// function=), a single match is used directly, and more than one triggers
-// an interactive disambiguation question listing each match's file so the
-// user can pick which one they meant - the same numbered-selection UX
-// 'cmaker new --describe --improvise' already established in
-// readSingleSelectAnswer, generalized here to a plain slice of match
-// descriptions instead of improvise.Question's options.
+// buildAmbiguousPrompt is explain's own thin wrapper around resolveMatch,
+// turning a resolved match into a prompt string via buildPrompt.
 func buildAmbiguousPrompt[M explainMatch](kind, name string, find func(root, name string) ([]M, error), buildPrompt func(name string, m M) string) (string, error) {
+	m, ok, err := resolveMatch("explain", kind, name, find)
+	if err != nil || !ok {
+		return "", err
+	}
+	return buildPrompt(name, m), nil
+}
+
+// resolveMatch runs find(".", name) and resolves it to a single match:
+// zero matches is reported as "not found in the current project" (the
+// exact wording requested for class=/function=, ok=false with a nil
+// error - the caller should just stop, not treat this as a failure) and
+// more than one triggers an interactive disambiguation question listing
+// each match's file so the user can pick which one they meant - the same
+// numbered-selection UX 'cmaker new --describe --improvise' already
+// established in readSingleSelectAnswer, generalized here to a plain
+// slice of match descriptions instead of improvise.Question's options.
+// Shared by explain/read/improve - anything that looks up a class or
+// function by name needs this exact same "not found / ambiguous / found"
+// resolution, not three independently-maintained copies of it. cmdName is
+// only used to shape the "needs a name" hint text accurately per caller
+// (explain/read/improve all have this same class=/function= flag shape,
+// but under different subcommands).
+func resolveMatch[M explainMatch](cmdName, kind, name string, find func(root, name string) ([]M, error)) (m M, ok bool, err error) {
 	if name == "" {
-		return "", fmt.Errorf("explain %s= needs a name, e.g. 'cmaker explain %s=Foo'", kind, kind)
+		return m, false, fmt.Errorf("%s= needs a name, e.g. 'cmaker %s %s=Foo'", kind, cmdName, kind)
 	}
 
 	matches, err := find(".", name)
 	if err != nil {
-		return "", err
+		return m, false, err
 	}
 	if len(matches) == 0 {
 		infof("%s %q not found in the current project.", strings.ToUpper(kind[:1])+kind[1:], name)
-		return "", nil
+		return m, false, nil
 	}
 	if len(matches) == 1 {
-		return buildPrompt(name, matches[0]), nil
+		return matches[0], true, nil
 	}
 
 	files := make([]string, len(matches))
-	for i, m := range matches {
-		files[i] = matchFile(m)
+	for i, mm := range matches {
+		files[i] = matchFile(mm)
 	}
 	fmt.Printf("Found %d definitions of %s %q:\n", len(matches), kind, name)
 	for i, f := range files {
 		fmt.Printf("  %d) %s\n", i+1, f)
 	}
 	idx := selectIndex(files)
-	return buildPrompt(name, matches[idx]), nil
+	return matches[idx], true, nil
 }
 
 // matchFile extracts the File field from either explain.ClassMatch or

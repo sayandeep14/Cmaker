@@ -26,7 +26,7 @@ const maxLogChars = 6000
 // body (git apply rejected it as corrupt) - models get diff-format
 // arithmetic wrong. Asking for full file content instead makes the model's
 // job "write correct code" and lets cmaker compute a guaranteed-consistent
-// diff itself (see diff.go's unifiedDiff), the same "don't trust the LLM to
+// diff itself (see diff.go's UnifiedDiff), the same "don't trust the LLM to
 // emit the final artifact directly" principle §19's accessor generator
 // already established.
 const systemPrompt = `You are a C/C++ build-failure triage assistant. You will be given a failing build/run log and the full contents of the source file(s) the compiler's error output referenced.
@@ -166,7 +166,7 @@ func DiffFromModelResponse(raw string, original map[string]string, order []strin
 		if !ok {
 			continue // f wasn't in the original set read from disk - ignore rather than diffing against ""
 		}
-		d := unifiedDiff(f, orig, newContent)
+		d := UnifiedDiff(f, orig, newContent)
 		if d == "" {
 			continue // proposed content was identical to the original - not an actual change
 		}

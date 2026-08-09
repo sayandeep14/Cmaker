@@ -101,9 +101,9 @@ func TestApplyAppliesADiffToTheWorkingTree(t *testing.T) {
 	exec.Command(gitPath, "-C", dir, "add", "main.cpp").Run()
 	exec.Command(gitPath, "-C", dir, "commit", "-q", "-m", "initial").Run()
 
-	diff := unifiedDiff("main.cpp", old, new_)
+	diff := UnifiedDiff("main.cpp", old, new_)
 	if diff == "" {
-		t.Fatal("unifiedDiff() returned empty for a real change")
+		t.Fatal("UnifiedDiff() returned empty for a real change")
 	}
 
 	if err := Apply(dir, diff); err != nil {
@@ -130,7 +130,7 @@ func TestApplyRejectsAnAlreadyAppliedDiff(t *testing.T) {
 	exec.Command(gitPath, "-C", dir, "add", "main.cpp").Run()
 	exec.Command(gitPath, "-C", dir, "commit", "-q", "-m", "initial").Run()
 
-	diff := unifiedDiff("main.cpp", old, new_)
+	diff := UnifiedDiff("main.cpp", old, new_)
 	if err := Apply(dir, diff); err != nil {
 		t.Fatalf("first Apply() error = %v", err)
 	}
