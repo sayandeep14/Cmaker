@@ -64,7 +64,7 @@ func runExplain(target, model string) error {
 		return err
 	}
 
-	fmt.Println(answer)
+	fmt.Println(renderMarkdown(answer))
 	return nil
 }
 
