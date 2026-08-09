@@ -184,7 +184,6 @@ func improviseScaffold(client *llm.Client, description, reasoning string) error 
 // prompt; not attempted here, since --improvise itself is CLI-only for now
 // (cmd/new.go's scaffoldFlagSet, not yet threaded into internal/tui).
 func askClarifyingQuestions(questions []improvise.Question) string {
-	reader := bufio.NewReader(os.Stdin)
 	var answers []string
 	for i, q := range questions {
 		fmt.Printf("\n%d. %s\n", i+1, q.Prompt)
@@ -193,15 +192,15 @@ func askClarifyingQuestions(questions []improvise.Question) string {
 			for j, opt := range q.Options {
 				fmt.Printf("   %d) %s\n", j+1, opt)
 			}
-			answers = append(answers, fmt.Sprintf("%s: %s", q.Prompt, readSingleSelectAnswer(reader, q.Options)))
+			answers = append(answers, fmt.Sprintf("%s: %s", q.Prompt, readSingleSelectAnswer(stdinReader, q.Options)))
 		case improvise.QuestionMultiSelect:
 			for j, opt := range q.Options {
 				fmt.Printf("   %d) %s\n", j+1, opt)
 			}
-			answers = append(answers, fmt.Sprintf("%s: %s", q.Prompt, readMultiSelectAnswer(reader, q.Options)))
+			answers = append(answers, fmt.Sprintf("%s: %s", q.Prompt, readMultiSelectAnswer(stdinReader, q.Options)))
 		default: // free_text
 			fmt.Print("   > ")
-			line, _ := reader.ReadString('\n')
+			line, _ := stdinReader.ReadString('\n')
 			answers = append(answers, fmt.Sprintf("%s: %s", q.Prompt, strings.TrimSpace(line)))
 		}
 	}

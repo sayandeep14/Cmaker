@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -33,7 +32,14 @@ var codegenCmd = &cobra.Command{
 		"and the first sub-task is taken up. On success the completed item is checked off.\n" +
 		"\n" +
 		"--deep uses a stronger model and asks clarifying questions (if it has any) before\n" +
-		"implementing anything, instead of guessing.\n" +
+		"implementing anything, instead of guessing. --plan asks for (and shows you) a short\n" +
+		"per-file plan of what it intends to change first, as a cheap sanity check before it\n" +
+		"spends the effort actually authoring the change - a second, earlier confirmation gate\n" +
+		"on top of the usual diff confirmation, not a replacement for it.\n" +
+		"\n" +
+		"--watch (only with --intent-from, and only without a specific :<num>) keeps pulling and\n" +
+		"completing tasks from the checklist, one after another, until none remain or one fails\n" +
+		"or is declined - instead of one task per invocation.\n" +
 		"\n" +
 		"Requires a clean git working tree (commit or stash first) - after showing the diff and\n" +
 		"getting your confirmation, it applies, rebuilds, and retries against the build error\n" +
@@ -42,28 +48,39 @@ var codegenCmd = &cobra.Command{
 		"attempt still fails to build, every change this run made is reverted and reported as a\n" +
 		"failure, never left half-applied.",
 	Example: `  cmaker codegen --intent="add a --verbose flag that prints every cmake invocation"
-  cmaker codegen --intent="refactor error handling to use Result<T>" --deep
+  cmaker codegen --intent="refactor error handling to use Result<T>" --deep --plan
   cmaker codegen --intent-from=.cmaker/suggestions.md
-  cmaker codegen --intent-from=:3`,
+  cmaker codegen --intent-from=:3
+  cmaker codegen --intent-from --watch`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		intent, _ := cmd.Flags().GetString("intent")
 		intentFrom, _ := cmd.Flags().GetString("intent-from")
 		intentFromSet := cmd.Flags().Changed("intent-from")
 		deep, _ := cmd.Flags().GetBool("deep")
+		plan, _ := cmd.Flags().GetBool("plan")
+		watch, _ := cmd.Flags().GetBool("watch")
 		model, _ := cmd.Flags().GetString("model")
 		maxAttempts, _ := cmd.Flags().GetInt("max-attempts")
 		if maxAttempts < 1 {
 			return fmt.Errorf("--max-attempts must be at least 1")
+		}
+		if watch && !intentFromSet {
+			return fmt.Errorf("--watch only applies to --intent-from")
+		}
+		if watch {
+			if _, numStr := parseIntentFromArg(intentFrom); numStr != "" {
+				return fmt.Errorf("--watch can't be combined with a specific :<num> - it always works through the whole file")
+			}
 		}
 
 		switch {
 		case intentFromSet && intent != "":
 			return fmt.Errorf("--intent and --intent-from are mutually exclusive")
 		case intentFromSet:
-			return runCodegenIntentFrom(intentFrom, deep, model, maxAttempts)
+			return runCodegenIntentFrom(intentFrom, deep, plan, model, maxAttempts, watch)
 		case intent != "":
-			_, err := runCodegenCore(intent, deep, model, maxAttempts)
+			_, err := runCodegenCore(intent, deep, plan, model, maxAttempts)
 			return err
 		default:
 			return fmt.Errorf("either --intent=\"...\" or --intent-from is required")
@@ -85,6 +102,8 @@ func init() {
 	codegenCmd.Flags().String("intent", "", "a single free-form change request, e.g. \"add input validation to parseConfig\"")
 	codegenCmd.Flags().String("intent-from", "", "pull a task from a 'cmaker suggest --export' checklist: [<file>][:<num>] (default file: "+defaultSuggestionsFile+"; default: first unmarked item)")
 	codegenCmd.Flags().Bool("deep", false, "use a stronger model and ask clarifying questions before implementing")
+	codegenCmd.Flags().Bool("plan", false, "ask for and confirm a short per-file plan before authoring the actual change")
+	codegenCmd.Flags().Bool("watch", false, "with --intent-from (no :<num>): keep completing tasks until none remain or one fails")
 	codegenCmd.Flags().String("model", "", "override the Anthropic model used (default: "+llm.DefaultImproviseModel+", or "+llm.DefaultOpusModel+" with --deep)")
 	codegenCmd.Flags().Int("max-attempts", 3, "give up (and revert) after this many failed build-fix attempts - the cost/turn guardrail for the retry loop")
 }
@@ -103,7 +122,7 @@ func init() {
 // Caught live: without this distinction, declining the confirmation
 // prompt for a broken-down sub-task still got it marked done in the
 // checklist file, having made no actual change at all.
-func runCodegenCore(intent string, deep bool, model string, maxAttempts int) (succeeded bool, err error) {
+func runCodegenCore(intent string, deep, plan bool, model string, maxAttempts int) (succeeded bool, err error) {
 	if !isInsideGitRepo(".") {
 		return false, fmt.Errorf("not a git repository - codegen needs one so its changes can be safely checked and committed; run 'git init' first (or scaffold with 'cmaker new'/'init' without --nogit)")
 	}
@@ -152,6 +171,19 @@ func runCodegenCore(intent string, deep bool, model string, maxAttempts int) (su
 		return false, fmt.Errorf("couldn't determine which files this intent needs - be more specific, or scope to a single function/class with 'cmaker improve' instead")
 	}
 	infof("Relevant files: %s", strings.Join(relevant, ", "))
+
+	if plan {
+		infof("Asking %s for a plan...", client.Model)
+		planText, err := agentic.AskPlan(context.Background(), client, intent, relevant)
+		if err != nil {
+			return false, err
+		}
+		fmt.Println(renderMarkdown(planText))
+		if !confirmYesNo("Proceed with this plan?") {
+			infof("Not proceeding.")
+			return false, nil
+		}
+	}
 
 	filesContent := make(map[string]string, len(relevant))
 	for _, f := range relevant {
@@ -378,76 +410,111 @@ func latestBuildLogSnippet() string {
 func collectAnswers(questions []string) string {
 	var b strings.Builder
 	b.WriteString("Clarifications:\n")
-	reader := bufio.NewReader(os.Stdin)
 	for _, q := range questions {
 		fmt.Printf("%s\n> ", q)
-		line, _ := reader.ReadString('\n')
+		line, _ := stdinReader.ReadString('\n')
 		fmt.Fprintf(&b, "Q: %s\nA: %s\n", q, strings.TrimSpace(line))
 	}
 	return b.String()
 }
+
+// maxWatchTasks bounds how many tasks a single --watch invocation will
+// pull and complete in one run - a safety cap against a runaway loop
+// (e.g. a breakdown step that somehow never converges to a leaf task
+// getting marked done), the same "hard cap so a bad loop can't run away"
+// guardrail principle as --max-attempts.
+const maxWatchTasks = 20
 
 // runCodegenIntentFrom resolves raw ([<file>][:<num>]) to a checklist
 // item (from a 'cmaker suggest --export' file), assesses whether it needs
 // breaking down first (only for a fresh, not-yet-broken-down top-level
 // item), runs it through runCodegenCore, and - only on success - checks
 // it off in place (cascading to its parent if this was the last unchecked
-// child of a broken-down item).
-func runCodegenIntentFrom(raw string, deep bool, model string, maxAttempts int) error {
+// child of a broken-down item). With watch, repeats this for the next
+// unchecked task (always re-reading the file fresh each time) until none
+// remain, one is declined, one fails, or maxWatchTasks is hit - numStr is
+// rejected together with watch by the caller (cmd/codegen.go's RunE),
+// since --watch always works through the whole file, not one specific
+// item.
+func runCodegenIntentFrom(raw string, deep, plan bool, model string, maxAttempts int, watch bool) error {
 	filePath, numStr := parseIntentFromArg(raw)
 	if filePath == "" {
 		filePath = defaultSuggestionsFile
 	}
 
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to read %s: %w (run 'cmaker suggest --export=%s' first)", filePath, err, filePath)
-	}
-	items := suggest.ParseChecklist(data)
-	if len(items) == 0 {
-		return fmt.Errorf("%s has no checklist items to work from", filePath)
-	}
-
-	var item *suggest.Item
-	if numStr != "" {
-		num, convErr := strconv.Atoi(numStr)
-		if convErr != nil {
-			return fmt.Errorf("invalid suggestion number %q in --intent-from", numStr)
-		}
-		item, err = suggest.FindByIndex(items, num)
-		if err != nil {
-			return err
-		}
-		if item == nil {
-			infof("Suggestion #%d is already done.", num)
+	for tasksDone := 0; ; tasksDone++ {
+		if watch && tasksDone >= maxWatchTasks {
+			warnf("Reached the safety cap of %d tasks in one --watch run - stopping. Run again to continue.", maxWatchTasks)
 			return nil
 		}
-	} else {
-		item = suggest.FindFirstUnchecked(items)
-		if item == nil {
-			infof("Nothing left to do in %s - every suggestion is checked off.", filePath)
-			return nil
-		}
-	}
 
-	if item.Parent == nil {
-		item, data, err = maybeBreakDownItem(filePath, data, item, model)
+		data, err := os.ReadFile(filePath)
 		if err != nil {
+			return fmt.Errorf("failed to read %s: %w (run 'cmaker suggest --export=%s' first)", filePath, err, filePath)
+		}
+		items := suggest.ParseChecklist(data)
+		if len(items) == 0 {
+			return fmt.Errorf("%s has no checklist items to work from", filePath)
+		}
+
+		var item *suggest.Item
+		if numStr != "" {
+			num, convErr := strconv.Atoi(numStr)
+			if convErr != nil {
+				return fmt.Errorf("invalid suggestion number %q in --intent-from", numStr)
+			}
+			item, err = suggest.FindByIndex(items, num)
+			if err != nil {
+				return err
+			}
+			if item == nil {
+				infof("Suggestion #%d is already done.", num)
+				return nil
+			}
+		} else {
+			item = suggest.FindFirstUnchecked(items)
+			if item == nil {
+				if watch && tasksDone > 0 {
+					okf("All done - completed %d task(s), nothing left in %s.", tasksDone, filePath)
+				} else {
+					infof("Nothing left to do in %s - every suggestion is checked off.", filePath)
+				}
+				return nil
+			}
+		}
+
+		if item.Parent == nil {
+			item, data, err = maybeBreakDownItem(filePath, data, item, model)
+			if err != nil {
+				return err
+			}
+		}
+
+		infof("Working on: %s", item.Text)
+		succeeded, err := runCodegenCore(item.FullTask(), deep, plan, model, maxAttempts)
+		if err != nil {
+			if watch {
+				return fmt.Errorf("stopped after %d task(s) - %q failed: %w", tasksDone, item.Text, err)
+			}
 			return err
 		}
-	}
+		if !succeeded {
+			infof("No changes were made - leaving %q unchecked in %s.", item.Text, filePath)
+			if watch {
+				infof("Stopping --watch after %d task(s) (the last one was declined or was a no-op).", tasksDone)
+			}
+			return nil
+		}
 
-	infof("Working on: %s", item.Text)
-	succeeded, err := runCodegenCore(item.FullTask(), deep, model, maxAttempts)
-	if err != nil {
-		return err
-	}
-	if !succeeded {
-		infof("No changes were made - leaving %q unchecked in %s.", item.Text, filePath)
-		return nil
-	}
+		if err := markChecklistItemDone(filePath, data, item); err != nil {
+			return err
+		}
 
-	return markChecklistItemDone(filePath, data, item)
+		if !watch {
+			return nil
+		}
+		okf("Moving to the next task...")
+	}
 }
 
 // maybeBreakDownItem asks whether a fresh top-level item needs to be

@@ -155,6 +155,54 @@ func AssessBreakdown(ctx context.Context, completer Completer, task string, cand
 	return parseStringArray(raw)
 }
 
+const planSystemPrompt = `You are a C/C++ engineering-planning assistant. You will be given a change request (an "intent") and the list of files that were selected as relevant to it.
+
+Describe your intended plan as a short list, one item per file, stating concretely what you'll change in it and why (or that you'll create it, if it's new) - not a restatement of the intent, and not implementation detail-level, just enough for a developer to sanity-check the plan before you write any code.
+
+Respond with ONLY the plan text (plain prose or a short list) - no markdown code fence, no preamble like "Here's my plan", nothing else.`
+
+// AskPlan asks completer for a short, human-readable plan of what it
+// intends to change across files (already selected, e.g. via
+// SuggestRelevantFiles) to satisfy intent - used by --plan mode (see
+// cmd/codegen.go) as a cheap sanity-check step before the more expensive
+// ProposeChanges call actually authors the change: the user reviews and
+// confirms the plan first, catching a misunderstood intent before any
+// real content generation happens. Unlike this package's other
+// functions, the response is freeform prose shown directly to the user,
+// not parsed - the same "prose is fine when it's read-only, informational
+// output" precedent internal/explain already established, since a plan
+// description is never applied to disk itself.
+func AskPlan(ctx context.Context, completer Completer, intent string, files []string) (string, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Intent: %s\n\n", intent)
+	b.WriteString("Files selected as relevant:\n")
+	for _, f := range files {
+		b.WriteString("- " + f + "\n")
+	}
+
+	raw, err := completer.Complete(ctx, planSystemPrompt, b.String())
+	if err != nil {
+		return "", fmt.Errorf("LLM request failed: %w", err)
+	}
+	return strings.TrimSpace(stripFence(strings.TrimSpace(raw))), nil
+}
+
+// stripFence removes a single leading and/or trailing markdown code-fence
+// line, if present - the same defensive tolerance this codebase's other
+// packages (internal/heal, internal/improve) each keep their own small
+// local copy of, rather than shared cross-package plumbing for a
+// five-line helper.
+func stripFence(s string) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "```") {
+		lines = lines[1:]
+	}
+	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
+}
+
 const changeSystemPrompt = `You are a C/C++ coding assistant implementing a change request (an "intent"). You will be given the intent and the complete content of every file relevant to it.
 
 You may modify any of the given files, and/or create brand-new files (e.g. a new helper header/source pair) with a sensible path relative to the project root, if that's the cleanest way to satisfy the intent. Do NOT propose changes to any other *existing* file besides the ones given to you - you have not seen its content, so any such change would be unfounded and will be discarded.

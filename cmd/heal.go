@@ -288,6 +288,25 @@ func applySuggestion(root, diff string) error {
 	return nil
 }
 
+// stdinReader is the one shared bufio.Reader every interactive stdin
+// prompt in cmd/ reads from (confirmYesNo, selectIndex,
+// askClarifyingQuestions, collectAnswers) - never construct a second,
+// independent bufio.NewReader(os.Stdin) anywhere else. bufio.Reader reads
+// from the underlying fd in chunks, not strictly one line at a time: when
+// stdin is a pipe with multiple answers already available (piped input,
+// as opposed to a live TTY where each answer only arrives once typed), a
+// fresh reader's first ReadString call can silently buffer-ahead and
+// consume a later prompt's answer too, which is then lost the moment that
+// reader goes out of scope - the next prompt's own fresh reader has no
+// way to get it back and just blocks/EOFs. Caught live: 'cmaker codegen
+// --plan' (the first flow to ever ask two sequential confirmYesNo
+// prompts in one run) silently treated its second prompt as "no" when
+// driven by two piped "y" answers, because the first confirmYesNo call's
+// now-discarded reader had already buffered both lines. A single
+// process-lifetime reader fixes it for every current and future
+// multi-prompt flow at once.
+var stdinReader = bufio.NewReader(os.Stdin)
+
 // confirmYesNo prompts on stderr (stdout is reserved for the diff itself,
 // see printDiff) and reads a line from stdin. Anything other than an
 // explicit "y"/"yes" - including a read failure, e.g. stdin isn't a
@@ -295,7 +314,7 @@ func applySuggestion(root, diff string) error {
 // ambiguous answer.
 func confirmYesNo(prompt string) bool {
 	fmt.Fprint(os.Stderr, colorize(ansiCyan, "-- "+prompt+" [y/N] "))
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	line, err := stdinReader.ReadString('\n')
 	if err != nil {
 		return false
 	}

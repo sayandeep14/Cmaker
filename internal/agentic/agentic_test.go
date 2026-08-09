@@ -127,6 +127,38 @@ func TestAssessBreakdownReturnsSubtasks(t *testing.T) {
 	}
 }
 
+func TestAskPlanReturnsPlanText(t *testing.T) {
+	fc := &fakeCompleter{response: "- src/main.cpp: add a --verbose flag and wire it into the build invocation"}
+	got, err := AskPlan(context.Background(), fc, "add a --verbose flag", []string{"src/main.cpp"})
+	if err != nil {
+		t.Fatalf("AskPlan() error = %v", err)
+	}
+	if !strings.Contains(got, "src/main.cpp") {
+		t.Errorf("AskPlan() = %q, want to mention the given file", got)
+	}
+	if !strings.Contains(fc.gotUser, "add a --verbose flag") {
+		t.Error("expected the intent text in the prompt sent to the model")
+	}
+}
+
+func TestAskPlanStripsCodeFence(t *testing.T) {
+	fc := &fakeCompleter{response: "```\n- a.cpp: do the thing\n```"}
+	got, err := AskPlan(context.Background(), fc, "do the thing", []string{"a.cpp"})
+	if err != nil {
+		t.Fatalf("AskPlan() error = %v", err)
+	}
+	if strings.Contains(got, "```") {
+		t.Errorf("AskPlan() = %q, want the code fence stripped", got)
+	}
+}
+
+func TestAskPlanPropagatesCompleterError(t *testing.T) {
+	fc := &fakeCompleter{err: errors.New("network error")}
+	if _, err := AskPlan(context.Background(), fc, "intent", []string{"a.cpp"}); err == nil {
+		t.Error("AskPlan() expected an error when the completer fails, got nil")
+	}
+}
+
 func TestProposeChangesRequiresIntent(t *testing.T) {
 	fc := &fakeCompleter{}
 	if _, err := ProposeChanges(context.Background(), fc, "", map[string]string{"a.cpp": "int main(){}"}); err == nil {

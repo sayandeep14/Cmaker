@@ -1,10 +1,8 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -184,7 +182,7 @@ func matchFile[M explainMatch](m M) string {
 // back into the original []M match slice, not just echo a label.
 func selectIndex(options []string) int {
 	fmt.Print("Which one? [1] > ")
-	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	line, _ := stdinReader.ReadString('\n')
 	line = strings.TrimSpace(line)
 	if idx, err := strconv.Atoi(line); err == nil && idx >= 1 && idx <= len(options) {
 		return idx - 1

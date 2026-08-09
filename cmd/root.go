@@ -200,6 +200,7 @@ func init() {
 	rootCmd.AddCommand(newBranchCmd)
 	rootCmd.AddCommand(editCmd)
 	rootCmd.AddCommand(codegenCmd)
+	rootCmd.AddCommand(reviewCmd)
 	rootCmd.AddCommand(benchCmd)
 	rootCmd.AddCommand(coverageCmd)
 	rootCmd.AddCommand(docsCmd)

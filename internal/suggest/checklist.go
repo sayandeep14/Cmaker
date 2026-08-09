@@ -103,6 +103,9 @@ func FindByIndex(items []*Item, num int) (*Item, error) {
 	}
 	it := items[num-1]
 	if len(it.Children) == 0 {
+		if it.Checked {
+			return nil, nil
+		}
 		return it, nil
 	}
 	for _, c := range it.Children {

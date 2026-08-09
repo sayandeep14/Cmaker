@@ -84,6 +84,17 @@ func TestFindByIndexOutOfRange(t *testing.T) {
 	}
 }
 
+func TestFindByIndexAlreadyCheckedLeaf(t *testing.T) {
+	items := ParseChecklist([]byte(sampleChecklist))
+	got, err := FindByIndex(items, 2) // "Use const references..." is already [x]
+	if err != nil {
+		t.Fatalf("FindByIndex() error = %v", err)
+	}
+	if got != nil {
+		t.Errorf("FindByIndex() on an already-checked leaf = %v, want nil", got)
+	}
+}
+
 func TestFindByIndexBrokenDownItem(t *testing.T) {
 	data := "- [ ] Big task\n  - [x] sub one\n  - [ ] sub two\n"
 	items := ParseChecklist([]byte(data))
