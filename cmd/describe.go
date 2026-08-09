@@ -233,7 +233,7 @@ func readMultiSelectAnswer(reader *bufio.Reader, options []string) string {
 	line = strings.TrimSpace(line)
 
 	var picked []string
-	for _, part := range strings.Split(line, ",") {
+	for part := range strings.SplitSeq(line, ",") {
 		part = strings.TrimSpace(part)
 		if idx, err := strconv.Atoi(part); err == nil && idx >= 1 && idx <= len(options) {
 			picked = append(picked, options[idx-1])

@@ -201,6 +201,8 @@ func init() {
 	rootCmd.AddCommand(editCmd)
 	rootCmd.AddCommand(codegenCmd)
 	rootCmd.AddCommand(reviewCmd)
+	rootCmd.AddCommand(fixCmd)
+	rootCmd.AddCommand(migrateCmd)
 	rootCmd.AddCommand(benchCmd)
 	rootCmd.AddCommand(coverageCmd)
 	rootCmd.AddCommand(docsCmd)

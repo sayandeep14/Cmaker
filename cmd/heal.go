@@ -343,7 +343,7 @@ func healStatus(format string, a ...any) {
 // isn't just cosmetic here, it's required for the output to stay usable.
 func printDiff(diff string) {
 	colored := term.IsTerminal(int(os.Stdout.Fd())) && !flagNoColor
-	for _, line := range strings.Split(diff, "\n") {
+	for line := range strings.SplitSeq(diff, "\n") {
 		if !colored {
 			fmt.Println(line)
 			continue
