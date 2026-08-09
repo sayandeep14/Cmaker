@@ -199,6 +199,7 @@ func init() {
 	rootCmd.AddCommand(dummygitCmd)
 	rootCmd.AddCommand(newBranchCmd)
 	rootCmd.AddCommand(editCmd)
+	rootCmd.AddCommand(codegenCmd)
 	rootCmd.AddCommand(benchCmd)
 	rootCmd.AddCommand(coverageCmd)
 	rootCmd.AddCommand(docsCmd)
