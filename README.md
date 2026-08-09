@@ -52,6 +52,7 @@ Hello from Cmaker!
 - [Agentic code changes (`codegen` / `fix` / `migrate`)](#agentic-code-changes-codegen--fix--migrate)
 - [Git integration](#git-integration)
 - [cmaker packs: publishing and installing reusable packages](#cmaker-packs-publishing-and-installing-reusable-packages)
+- [Project status (`cmaker status`)](#project-status-cmaker-status)
 - [The interactive dashboard (TUI)](#the-interactive-dashboard-tui)
 - [Shell completions](#shell-completions)
 - [Global flags](#global-flags)
@@ -1602,9 +1603,12 @@ cmaker git -- log --oneline -5           # run any git command directly, no name
 - **`cmaker git -- <args...>`** forwards everything after `git` straight
   to the real `git` binary — the universal escape hatch for any git
   subcommand cmaker doesn't already handle, including `cmaker git init`/
-  `cmaker git add -A`/`cmaker git clean -fd`, which are distinct from bare
-  `cmaker init`/`add`/`clean` (cmaker's own scaffold/dependency/build-dir
-  commands) — pass `--git` to those directly instead if you want the real
+  `cmaker git add -A`/`cmaker git clean -fd`/`cmaker git status`, which
+  are distinct from bare `cmaker init`/`add`/`clean`/`status` (cmaker's
+  own scaffold/dependency/build-dir/dashboard commands, the last of which
+  is a project dashboard — see
+  [below](#project-status-cmaker-status) — not plain git status) — pass
+  `--git` to `init`/`add`/`clean` directly instead if you want the real
   git command, e.g. `cmaker clean --git -fd`.
 
 **`cmaker dummygit`** bootstraps a throwaway git repo (init + commit
@@ -1674,6 +1678,113 @@ cmaker search some-term --remote      # also search the packs registry, not just
 Installed packs are recorded in `cmaker.lock` alongside CPM dependencies
 (see [The lockfile](#package-install-a-real-dependency-manager-ux)), so a
 teammate cloning the project gets the exact same pinned pack versions.
+
+---
+
+## Project status (`cmaker status`)
+
+A read-only project dashboard — everything you'd otherwise piece together
+from several other commands (`cmaker.yaml`, `cmaker list`, `cmaker suggest
+list`, `git status`, `du -sh`) shown together, formatted and colored. The
+project name opens the dashboard as a big two-color block-letter banner
+(a small self-contained bitmap font — no `figlet`/ASCII-art dependency)
+with a one-cell drop shadow for a bit of depth — the plain-text rendering
+below doesn't do the actual two-tone coloring justice:
+
+```bash
+cmaker status
+```
+
+```
+█   █ █   █  ███  ████  ████
+██ ██  █ █  █   █ █   █ █   █
+█ █ █   █   █████ ████  ████
+█   █   █   █   █ █     █
+█   █   █   █   █ █     █
+
+  Language:        cpp (C++20)
+  Target:          executable
+  Compiler:        auto-detected
+  Features:        tests, coverage
+
+Git
+───
+  Branch:          main (2 ahead)
+  Working tree:    2 staged, 1 modified, 3 untracked
+  Last commit:     Fix off-by-one in LinkedList::sum (3 hours ago)
+
+Dependencies (2)
+────────────────
+  • fmt@10.2.1
+  • nlohmann-json@v3.11.3
+
+Packs (1)
+─────────
+  • linkedList@0.1.0
+
+Suggestions
+───────────
+  Queued:          1 done, 2 remaining (of 3) — .cmaker/suggestions.md
+  Next up:         Handle potential null pointer dereference in operator[]
+
+Disk usage
+──────────
+  Source:          12.4 KiB
+  Build:            48.2 MiB
+  Executable:       1.2 MiB (myapp)
+  .git:             340.1 KiB
+  Total:            48.6 MiB
+```
+
+This is deliberately a different thing from plain git status — use
+`cmaker git status` for that (see [above](#git-integration); bare `cmaker
+status` used to forward to `git status` before this dashboard existed, so
+this is a breaking rename for anyone with muscle memory for the old
+behavior).
+
+With `--no-color`, the banner drops its shadow layer entirely rather than
+printing it in the same color as the letters themselves — a shadow only
+reads as depth when it's a visibly different color from the main text;
+without one, it would just blur the letters together.
+
+**`cmaker status --detailed`** adds three slower or optional signals, each
+degrading gracefully rather than failing the whole command when its
+prerequisite isn't met:
+
+```bash
+cmaker status --detailed
+```
+
+- **Code coverage** — whether `coverage: true` is enabled and a report
+  already exists (`build/coverage/index.html`, see
+  [above](#coverage-benchmarks-docs-and-docker)), with a best-effort
+  attempt at the overall line-coverage percentage. Purely a read of
+  whatever's already on disk — `--detailed` never runs `cmaker coverage`
+  itself (that rebuilds and re-runs your program, not something a status
+  check should do as a side effect).
+- **Generated code** — an exact count of code inside a `generate
+  accessors` marker block (see
+  [above](#code-generation-generate-accessors)). Deliberately *not* a
+  claim about how much of the codebase is "AI-written" overall —
+  `codegen`/`fix`/`migrate`/`improve --apply` don't leave a distinguishing
+  marker today, so this only ever counts what's actually real and
+  greppable.
+- **Documentation** — a local, deterministic count of Doxygen comment
+  blocks plus any drift issues (see
+  [above](#coverage-benchmarks-docs-and-docker)'s `doctor --docs`), and,
+  if `ANTHROPIC_API_KEY` is configured, an LLM-assessed quality verdict
+  (a 1–10 score plus a one-line summary) from reading a sample of your
+  source — skipped with a hint to configure a key rather than failing if
+  it isn't. The verdict is cached (`.cmaker/status/doc-quality.json`,
+  keyed on a hash of the exact source sampled plus the model used) and
+  reused — no new LLM call, no spent tokens — on every later `--detailed`
+  run until that source actually changes or a different `--model` is
+  given; the cached line is labeled `(cached - source unchanged since
+  last check)` so it's never mistaken for a fresh read.
+
+```bash
+cmaker status --detailed --model=opus   # override the model used for the documentation verdict
+```
 
 ---
 
@@ -2292,6 +2403,18 @@ Requires `cmaker login` first.
 </details>
 
 <details>
+<summary><code>cmaker status [flags]</code></summary>
+
+Shows the project dashboard (see
+[above](#project-status-cmaker-status)) — config, git, dependencies,
+packs, suggestions, disk usage. Use `cmaker git status` for plain git's
+own output instead.
+
+- `--detailed` — also show coverage, generated-code, and documentation-quality signals
+- `--model string` — override the Anthropic model used for `--detailed`'s documentation-quality verdict
+</details>
+
+<details>
 <summary><code>cmaker tui</code></summary>
 
 Launches the interactive dashboard explicitly (same as bare `cmaker` in a
@@ -2315,6 +2438,7 @@ myapp/
 ├── build/                # cmake's build directory (safe to delete: cmaker clean)
 ├── .cmaker/logs/          # build/run log captures, gitignored (see 'cmaker logs'/'cmaker heal')
 ├── .cmaker/heal/          # cached 'cmaker heal' diagnosis, gitignored (see 'cmaker heal --apply')
+├── .cmaker/status/        # cached 'cmaker status --detailed' doc-quality verdict, gitignored
 ├── .cmaker/suggestions.md # default 'cmaker suggest --export'/'suggest add' checklist (see 'cmaker suggest list'/'codegen --intent-from')
 ├── .git/                 # auto-initialized with an initial commit, unless --nogit (see 'cmaker new --help')
 ├── rust/                 # only if --with-rust

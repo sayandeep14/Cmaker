@@ -10,12 +10,14 @@ import (
 // headless/CI usage needs sane, scriptable output today.
 
 const (
-	ansiReset  = "\x1b[0m"
-	ansiRed    = "\x1b[31m"
-	ansiGreen  = "\x1b[32m"
-	ansiYellow = "\x1b[33m"
-	ansiCyan   = "\x1b[36m"
-	ansiBold   = "\x1b[1m"
+	ansiReset   = "\x1b[0m"
+	ansiRed     = "\x1b[31m"
+	ansiGreen   = "\x1b[32m"
+	ansiYellow  = "\x1b[33m"
+	ansiBlue    = "\x1b[34m"
+	ansiMagenta = "\x1b[35m"
+	ansiCyan    = "\x1b[36m"
+	ansiBold    = "\x1b[1m"
 )
 
 func colorize(code, s string) string {

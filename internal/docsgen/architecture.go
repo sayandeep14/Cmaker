@@ -73,3 +73,58 @@ func BuildArchitecturePrompt(root string) (string, error) {
 	}
 	return b.String(), nil
 }
+
+// maxQualityChars bounds how much source gets sent for AssessQuality - a
+// smaller budget than BuildArchitecturePrompt's, since 'cmaker status
+// --detailed' is meant to be a quick, cheap check on top of an already
+// fast local dashboard, not a heavyweight review call.
+const maxQualityChars = 15000
+
+// BuildQualityPrompt gathers as many of root's source files as fit within
+// maxQualityChars (largest first, the same heuristic BuildArchitecturePrompt
+// and internal/suggest.BuildPrompt both use) into the prompt string for
+// AssessQuality.
+func BuildQualityPrompt(root string) (string, error) {
+	files, err := explain.WalkSourceFiles(root)
+	if err != nil {
+		return "", err
+	}
+
+	type fileInfo struct {
+		rel  string
+		size int64
+	}
+	infos := make([]fileInfo, 0, len(files))
+	for _, f := range files {
+		fi, err := os.Stat(filepath.Join(root, f))
+		if err != nil {
+			continue
+		}
+		infos = append(infos, fileInfo{rel: f, size: fi.Size()})
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].size > infos[j].size })
+
+	var b strings.Builder
+	budget := maxQualityChars
+	included := 0
+	for _, fi := range infos {
+		if budget <= 0 {
+			break
+		}
+		data, err := os.ReadFile(filepath.Join(root, fi.rel))
+		if err != nil {
+			continue
+		}
+		content := string(data)
+		if len(content) > budget {
+			continue
+		}
+		fmt.Fprintf(&b, "--- file: %s ---\n%s\n\n", fi.rel, content)
+		budget -= len(content)
+		included++
+	}
+	if included == 0 {
+		return "", fmt.Errorf("no source files found under %s to assess documentation for", root)
+	}
+	return b.String(), nil
+}

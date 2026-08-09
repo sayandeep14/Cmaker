@@ -26,6 +26,25 @@ var (
 	identifierRe      = regexp.MustCompile(`^[A-Za-z_]\w*$`)
 )
 
+// CountDocCommentBlocks counts "/**"-started Doxygen comment blocks in
+// content - a cheap, deterministic proxy for "how much of this file has
+// been documented at all," used by 'cmaker status --detailed' alongside
+// FindDriftIssues and (optionally) AssessQuality's LLM-based judgment.
+// Deliberately not a full documented-vs-undocumented function ratio: that
+// would need a real signature parser this codebase doesn't have (see
+// internal/explain's own name-targeted, not exhaustive, scanner) - a
+// block count is honest about being a count, not a coverage percentage
+// this heuristic can't actually back up.
+func CountDocCommentBlocks(content string) int {
+	count := 0
+	for _, line := range strings.Split(content, "\n") {
+		if docCommentStartRe.MatchString(line) {
+			count++
+		}
+	}
+	return count
+}
+
 // FindDriftIssues scans content (one source file's text) for Doxygen
 // "/**"-"*/" blocks immediately followed (after any blank lines) by a
 // function/method signature, and reports any @param name that doesn't

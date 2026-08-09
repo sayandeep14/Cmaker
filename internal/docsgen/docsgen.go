@@ -19,6 +19,7 @@ package docsgen
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -94,6 +95,51 @@ func GenerateDoxygenComment(ctx context.Context, completer Completer, kind, name
 		return "", fmt.Errorf("model response wasn't a Doxygen comment block:\n%s", raw)
 	}
 	return raw, nil
+}
+
+// Quality is an LLM's structured verdict on how well a project's source is
+// documented - used by `cmaker status --detailed` (see cmd/status.go)
+// alongside the fully local, deterministic signals FindDriftIssues and a
+// plain comment-block count already give: those catch "existing comments
+// are stale" and "how many comment blocks exist" precisely, but can't
+// judge whether the comments that DO exist are actually any good, or
+// whether the code that has none would benefit from some - a judgment
+// call worth an LLM's read, not a regex's.
+type Quality struct {
+	Score   int    `json:"score"`   // 1 (barely any useful documentation) - 10 (thorough and accurate)
+	Summary string `json:"summary"` // one or two sentences of specifics
+}
+
+const qualitySystemPrompt = `You are a C/C++ documentation reviewer. You will be given a sample of a project's source files. Judge the overall quality of its documentation - comments, Doxygen blocks, README-style explanations in the code itself - not the code's correctness.
+
+Respond with ONLY a JSON object (no markdown code fence, no prose before or after) shaped exactly like:
+{"score": 1-10, "summary": "one or two sentences of specifics - what's well documented, what's missing or unclear"}
+
+1 means barely any useful documentation exists; 10 means thorough, accurate, and helpful throughout. Judge only what's actually shown, not what a "typical" project might have.`
+
+// AssessQuality asks completer to judge prompt (see BuildQualityPrompt)
+// and returns a structured verdict - json.Decoder (not json.Unmarshal)
+// for the same reason every other structured-output parser in this
+// codebase uses it: tolerates a code-fenced response or trailing prose
+// after the JSON, rather than failing on either.
+func AssessQuality(ctx context.Context, completer Completer, prompt string) (Quality, error) {
+	raw, err := completer.Complete(ctx, qualitySystemPrompt, prompt)
+	if err != nil {
+		return Quality{}, fmt.Errorf("LLM request failed: %w", err)
+	}
+	raw = stripFence(strings.TrimSpace(raw))
+	var q Quality
+	dec := json.NewDecoder(strings.NewReader(raw))
+	if err := dec.Decode(&q); err != nil {
+		return Quality{}, fmt.Errorf("model response wasn't a valid JSON verdict: %w\nresponse was:\n%s", err, raw)
+	}
+	if q.Score < 1 {
+		q.Score = 1
+	}
+	if q.Score > 10 {
+		q.Score = 10
+	}
+	return q, nil
 }
 
 // stripFence removes a single leading and/or trailing markdown code-fence

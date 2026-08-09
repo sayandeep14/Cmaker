@@ -139,10 +139,12 @@ func isRegisteredCommandName(name string) bool {
 // named-config management, wipe build/); use `cmaker git init`/`cmaker
 // init --git` etc. for git's version of them instead (see gitCmd and
 // maybeDispatchGitOverride in git.go). push is also excluded - it's a
-// real registered command (see push.go) so it can offer --auto.
+// real registered command (see push.go) so it can offer --auto. status is
+// excluded too, as of the project-dashboard 'cmaker status' (see
+// status.go) - use `cmaker git status` for plain git's own output.
 var knownGitVerbs = map[string]bool{
 	"pull": true, "fetch": true, "clone": true,
-	"status": true, "branch": true, "checkout": true, "switch": true,
+	"branch": true, "checkout": true, "switch": true,
 	"merge": true, "rebase": true, "reset": true, "revert": true,
 	"tag": true, "remote": true, "stash": true, "show": true,
 	"blame": true, "cherry-pick": true, "rm": true, "mv": true,
@@ -211,6 +213,7 @@ func init() {
 	rootCmd.AddCommand(benchCmd)
 	rootCmd.AddCommand(coverageCmd)
 	rootCmd.AddCommand(docsCmd)
+	rootCmd.AddCommand(statusCmd)
 }
 
 // SetVersion sets the version string cobra reports for the auto-generated

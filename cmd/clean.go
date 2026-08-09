@@ -22,7 +22,7 @@ var cleanCmd = &cobra.Command{
 		if err := os.Mkdir("build", 0755); err != nil {
 			return fmt.Errorf("failed to recreate build/: %w", err)
 		}
-		okf("🧹 Build folder cleared.")
+		okf("Build folder cleared.")
 		return nil
 	},
 }

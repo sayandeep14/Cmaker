@@ -85,7 +85,7 @@ func init() {
 }
 
 func runDoctor(checkAI, checkDocs bool) error {
-	fmt.Printf("🩺 OS: %s\n", runtime.GOOS)
+	fmt.Printf("OS: %s\n", runtime.GOOS)
 
 	missingRequired := false
 	haveCompiler := false
