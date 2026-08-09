@@ -14,9 +14,20 @@ import (
 // where a failed/partial apply or a later revert becomes ambiguous about
 // what came from the user vs. what came from the patch.
 func WorkingTreeClean(root string) (bool, error) {
-	out, err := exec.Command("git", "-C", root, "status", "--porcelain").Output()
+	cmd := exec.Command("git", "-C", root, "status", "--porcelain")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return false, fmt.Errorf("failed to check git status (is %s a git repository?): %w", root, err)
+		// 'cmaker new' never runs git init on a scaffolded project, so
+		// hitting this on a brand new project is the common case, not an
+		// edge case - worth a distinct, actionable message (not just the
+		// raw "exit status 128" a plain %w would surface) rather than
+		// leaving the user to guess that "git init" is the fix.
+		if strings.Contains(stderr.String(), "not a git repository") {
+			return false, fmt.Errorf("%s isn't a git repository - 'cmaker heal --apply' requires one, to safely confirm your working tree has no uncommitted changes before applying a patch. Run 'git init' (and make an initial commit) in this project, then retry - or use plain 'cmaker heal' (no --apply) to just see the suggested diff without needing git at all", root)
+		}
+		return false, fmt.Errorf("failed to check git status in %s: %w\n%s", root, err, strings.TrimSpace(stderr.String()))
 	}
 	return len(strings.TrimSpace(string(out))) == 0, nil
 }

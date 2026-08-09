@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -76,8 +77,16 @@ func TestWorkingTreeCleanNotAGitRepo(t *testing.T) {
 		t.Skip("git not found on PATH, skipping")
 	}
 	dir := t.TempDir()
-	if _, err := WorkingTreeClean(dir); err == nil {
-		t.Error("WorkingTreeClean() on a non-git directory: expected an error, got nil")
+	_, err := WorkingTreeClean(dir)
+	if err == nil {
+		t.Fatal("WorkingTreeClean() on a non-git directory: expected an error, got nil")
+	}
+	// Real user report: 'cmaker new' never runs git init, so this is the
+	// common first-contact case, not a rare edge case - the error must
+	// actually say what to do ("git init"), not just surface git's raw
+	// "exit status 128" the way an unwrapped %w would.
+	if !strings.Contains(err.Error(), "git init") {
+		t.Errorf("WorkingTreeClean() error = %q, want it to mention 'git init' as the fix", err.Error())
 	}
 }
 
