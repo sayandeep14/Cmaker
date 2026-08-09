@@ -41,6 +41,29 @@ const DefaultImproviseModel = "claude-sonnet-5"
 // explicit per-tier confirmation (see cmd/heal.go).
 const DefaultOpusModel = "claude-opus-5"
 
+// modelAliases lets --model=haiku/sonnet/opus (case-insensitive) stand in
+// for the exact, dated model identifier every AI-assisted command would
+// otherwise require - resolved to whichever concrete model each alias
+// currently means, so an alias always tracks the same models these
+// defaults do without cmaker needing a released update to move a model
+// generation forward. Anything not in this map (including an already-exact
+// model name like "claude-opus-5") passes through unchanged.
+var modelAliases = map[string]string{
+	"haiku":  DefaultModel,
+	"sonnet": DefaultImproviseModel,
+	"opus":   DefaultOpusModel,
+}
+
+// ResolveModel expands a short --model alias (haiku/sonnet/opus,
+// case-insensitive) to its current full model identifier; any other value,
+// including an already-fully-qualified model name, passes through as-is.
+func ResolveModel(model string) string {
+	if full, ok := modelAliases[strings.ToLower(model)]; ok {
+		return full
+	}
+	return model
+}
+
 const (
 	apiURL     = "https://api.anthropic.com/v1/messages"
 	apiVersion = "2023-06-01"
@@ -73,6 +96,8 @@ func NewClientFromEnv(model string) (*Client, error) {
 	}
 	if model == "" {
 		model = DefaultModel
+	} else {
+		model = ResolveModel(model)
 	}
 	return &Client{APIKey: key, Model: model, HTTPClient: &http.Client{Timeout: 60 * time.Second}}, nil
 }

@@ -48,6 +48,10 @@ Hello from Cmaker!
 - [Natural-language scaffolding (`--describe`)](#natural-language-scaffolding---describe)
   - [Going further: `--improvise`](#going-further---improvise)
 - [Explaining your code (`cmaker explain`)](#explaining-your-code-cmaker-explain)
+- [Reading, editing, and improving code](#reading-editing-and-improving-code)
+- [Agentic code changes (`codegen` / `fix` / `migrate`)](#agentic-code-changes-codegen--fix--migrate)
+- [Git integration](#git-integration)
+- [cmaker packs: publishing and installing reusable packages](#cmaker-packs-publishing-and-installing-reusable-packages)
 - [The interactive dashboard (TUI)](#the-interactive-dashboard-tui)
 - [Shell completions](#shell-completions)
 - [Global flags](#global-flags)
@@ -113,8 +117,12 @@ Declining any offer is fine — cmaker still installs and works, just prints
 the manual install hint instead (same as plain `cmaker doctor` always
 has).
 
-Finally it optionally collects an Anthropic API key for the AI-assisted
-commands (`heal`, `describe`, `explain`, `generate accessors`) and saves it
+Finally it optionally collects an Anthropic API key for cmaker's
+AI-assisted commands (`heal`, `fix`, `migrate`, `codegen`, `improve`,
+`document`, `suggest`, `review`, `explain`, `read --explain`, `describe`,
+`generate accessors`, `docs --narrative`, `commit`/`newbranch`'s message
+generation — see the [Table of contents](#table-of-contents) for all of
+them) and saves it
 to `~/.cmaker/env`, then **tests that key with a real request** and tells
 you plainly if it didn't work — cmaker itself is still fully installed and
 usable either way, just without those specific AI features until the key is
@@ -240,6 +248,21 @@ available once you need more than "hello world."
 | `cmaker tui` | Launch the interactive dashboard explicitly |
 
 Run any command with `--help` for its full flag list, e.g. `cmaker new --help`.
+
+`cmaker new`/`cmaker init` also `git init` the scaffolded project and make
+an initial commit automatically (skip with `--nogit`) — this is what lets
+`cmaker heal --apply` and the other apply-a-diff commands work right out of
+the box, since they all require a clean git working tree to apply against.
+
+Beyond these, `cmaker` also ships a full set of AI-assisted commands (code
+explanation, single-symbol improvements, whole-project suggestions, agentic
+multi-file changes, dependency migration, code review) and git-workflow
+helpers (`commit`, `push --auto`, `newbranch`, plus a `cmaker git ...`
+escape hatch for anything else) — see
+[Reading, editing, and improving code](#reading-editing-and-improving-code),
+[Agentic code changes](#agentic-code-changes-codegen--fix--migrate), and
+[Git integration](#git-integration) below, or jump straight to the full
+[Command reference](#command-reference).
 
 ---
 
@@ -772,6 +795,23 @@ via [Doxygen](https://www.doxygen.nl). `cmaker docs` also works without
 `--with-docs` having been used first — it writes a default `Doxyfile` on
 the fly if none exists.
 
+**`cmaker docs --narrative`** is a different, LLM-assisted mode entirely:
+instead of extracting Doxygen comments you've already written, it reads
+your actual source and *authors* plain-English narrative docs from
+scratch (Anthropic; requires `ANTHROPIC_API_KEY`) — one markdown file per
+source file, written to `docs/narrative/` by default.
+
+```bash
+cmaker docs --narrative                  # narrate the whole project (capped at --max-files, default 15)
+cmaker docs --narrative --file=src/server.cpp   # narrate just one file
+cmaker docs --narrative --out=docs/guide  # change the output directory
+```
+
+Related: `cmaker doctor --docs` scans your existing Doxygen comment blocks
+for drift — `@param` entries that no longer match a function's real
+parameter list, or real parameters with no `@param` at all — so comments
+don't silently rot as signatures change.
+
 ### Docker (`--with-docker`)
 
 ```bash
@@ -1132,6 +1172,26 @@ cmaker heal --kind=build   # only consider build failures, not run
 cmaker heal --model=...    # override the Anthropic model used
 ```
 
+Every AI-assisted command's `--model` flag accepts either a full model
+name (e.g. `claude-opus-5`) or one of the short aliases `haiku`, `sonnet`,
+`opus` (case-insensitive) — each resolved to whichever concrete model that
+tier currently means, so `--model=opus` keeps working the same way across
+a future model generation without you needing to update anything. Anything
+else is passed straight through to the Anthropic API as-is.
+
+If the model can't find a fix from the file(s) the log itself points at,
+`cmaker heal` offers to **escalate** rather than just giving up — each
+step asked separately, nothing happens without your say-so:
+
+1. **Expand context** — the model picks other project files it thinks are
+   relevant from cmaker's real file list (never an invented path), and
+   diagnoses again with that wider context.
+2. **Try a stronger model** — first Sonnet, then Opus, each offered as its
+   own confirmation if the previous attempt still came up empty.
+
+Pinning `--model` yourself skips the model-escalation steps (context
+expansion is still offered) — you've already told it which model to use.
+
 **`cmaker heal --apply`** writes the suggested fix to disk, but with real
 guardrails, not a blind auto-apply:
 
@@ -1139,10 +1199,15 @@ guardrails, not a blind auto-apply:
 cmaker heal --apply
 ```
 
-- Refuses outright unless the git working tree is clean (`git status
-  --porcelain` is empty) — an LLM-proposed patch never lands on top of
-  already-dirty state, where a partial apply or a later revert would
-  become ambiguous about what came from you vs. the patch.
+- Needs a clean git working tree to safely apply a patch against, but
+  doesn't just refuse if you don't have one:
+  - **No git repository at all** — one is bootstrapped temporarily
+    (everything committed as a baseline, the same thing `cmaker dummygit`
+    does standalone) and removed again once `heal` finishes.
+  - **A real repository, but it's dirty** — a temporary commit is made
+    and undone afterward (with a warning), so your uncommitted work is
+    never lost or mixed up with the patch.
+  - **Already clean** — applies directly, no extra steps.
 - If this exact failure hasn't been diagnosed yet, it runs the same
   diagnosis as plain `cmaker heal`, prints the diff, and **asks you to
   confirm** (`Apply this diff? [y/N]`) before touching anything — nothing
@@ -1257,10 +1322,11 @@ for patching existing code. Declining leaves the scaffold exactly as
 `--describe` alone would have produced it.
 
 Applying writes each changed file's proposed content directly (not via
-`git apply`) — a freshly scaffolded project isn't a git repository yet,
-and the model's response already contains the exact target content for
-each file, the same "ask for full corrected file content, cmaker computes
-and verifies the diff" machinery `cmaker heal` already established
+`git apply`) — the refinement runs before the scaffold's own auto-`git
+init`/initial-commit step (see [Core commands](#core-commands)), and the
+model's response already contains the exact target content for each file,
+the same "ask for full corrected file content, cmaker computes and
+verifies the diff" machinery `cmaker heal` already established
 (`internal/heal`'s diff computation is shared code, not reinvented here).
 
 `--improvise` defaults to a stronger model (`claude-sonnet-5`) than every
@@ -1310,6 +1376,304 @@ cmaker explain config                # explain cmaker.yaml and the generated CMa
 ```bash
 cmaker explain lastError --model=...   # override the Anthropic model used (default: claude-haiku-4-5)
 ```
+
+---
+
+## Reading, editing, and improving code
+
+A family of commands scoped to a single `class=<Name>`/`function=<name>`/
+`file=<path>` target — the same lookup `cmaker explain` uses (searching
+every tracked source file, skipping `build/`/`.git/`, and asking which
+match you meant if a name isn't unique). They range from purely local (no
+LLM at all) to LLM-assisted-but-read-only to LLM-assisted-with-a-diff-to-
+confirm — in increasing order of what they touch:
+
+| Command | Touches disk? | Uses an LLM? |
+|---|---|---|
+| `cmaker read <target>` | Never | Only with `--explain` |
+| `cmaker edit <target>` | Yes, but only what you type | Never |
+| `cmaker review` | Never | Yes |
+| `cmaker suggest` | Never (or writes a checklist with `--export`) | Yes |
+| `cmaker document <target>` | Only with `--apply` | Yes |
+| `cmaker improve <target> --intent=...` | Only with `--apply` | Yes |
+
+**`cmaker read <target>`** prints the matched code with terminal syntax
+highlighting — `class=`/`function=`/`file=`/`lastError` — a pure local
+read, nothing sent anywhere by default:
+
+```bash
+cmaker read function=parseConfig
+cmaker read file=src/server.cpp
+cmaker read function=parseConfig --explain   # LLM adds inline explanatory comments (Anthropic; requires ANTHROPIC_API_KEY)
+```
+
+`--explain` never lets the model rewrite the code itself — it only
+proposes *where* a comment belongs, and cmaker splices that comment into
+the exact original source deterministically, so what you see printed is
+always still the real code.
+
+**`cmaker edit <target>`** opens the matched code (`class=`/`function=`/
+`file=`) in an inline, nano-like terminal editor — arrow keys to move,
+type to insert, Backspace/Delete to remove, Ctrl+S to save, Esc/Ctrl+C to
+cancel without writing anything. No LLM involved at all; this is a purely
+manual, local edit.
+
+**`cmaker review`** critiques every uncommitted change (staged or not —
+the same set `cmaker commit` would actually commit) for likely bugs,
+missing error handling, edge cases, and anything unfinished-looking.
+Nothing is ever written — the same pure-read shape as `cmaker explain`,
+just critiquing instead of explaining.
+
+**`cmaker suggest`** reviews the *whole* project (not just uncommitted
+changes) and suggests concrete improvements:
+
+```bash
+cmaker suggest
+cmaker suggest --export=SUGGESTIONS.md   # write a markdown checklist instead of just printing
+```
+
+`--export` is designed to be worked through by hand one item at a time —
+or picked up automatically by `cmaker codegen --intent-from` (see
+[below](#agentic-code-changes-codegen--fix--migrate)).
+
+Once exported, `cmaker suggest` has its own subcommands for working the
+checklist by hand — viewing what's queued, and adding/removing/marking
+items — no LLM call needed for pure bookkeeping:
+
+```bash
+cmaker suggest list                      # every suggestion, checked and unchecked
+cmaker suggest next                      # just the next unmarked one
+cmaker suggest add "Add bounds checking to parseArgs"
+cmaker suggest add "Extract shared validation" --detail="Duplicated across parseA and parseB"
+cmaker suggest remove 2                  # delete suggestion #2 (as numbered by 'list')
+cmaker suggest done 2                    # check it off by hand
+cmaker suggest undone 2                  # uncheck it again
+```
+
+All six accept `--file` (default: `.cmaker/suggestions.md`, the same
+fallback `cmaker codegen --intent-from` uses) — so a bare `cmaker suggest
+next` and a bare `cmaker codegen --intent-from` always agree on which
+checklist they mean. `done`/`undone` operate on the num'th *top-level*
+item and cascade to every one of its sub-tasks if it's been broken down
+(see [below](#agentic-code-changes-codegen--fix--migrate)); `remove`
+deletes a top-level item's own line, detail, and sub-tasks together.
+
+**`cmaker document <target>`** writes a Doxygen comment block (`@brief`/
+`@param`/`@return`/`@throws`) for a single `function=`/`class=`, shown as
+a diff:
+
+```bash
+cmaker document function=parseConfig
+cmaker document class=Widget --apply
+```
+
+**`cmaker improve <target> --intent="..."`** asks an LLM to improve a
+single `function=`/`class=` given an intent, shown as a diff:
+
+```bash
+cmaker improve function=isPrime --intent="improve time complexity"
+cmaker improve class=Widget --intent="add move semantics" --apply
+cmaker improve function=parseConfig --intent="extract shared validation into a helper" --strict
+```
+
+By default the model sees the *whole* file the target lives in and may
+change anywhere within it (add an `#include`, add a helper, propose a
+brand-new file) — never an existing file other than the one it was shown,
+though. `--strict` scopes it to exactly the function/class body itself,
+touching nothing else. Both `document`/`improve` are deliberately scoped
+to one symbol at a time — see [Agentic code changes](#agentic-code-changes-codegen--fix--migrate)
+below for whole-project changes.
+
+---
+
+## Agentic code changes (`codegen` / `fix` / `migrate`)
+
+Three commands that share the same underlying machinery: find the
+relevant file(s) themselves (rather than being pointed at one symbol),
+propose a multi-file diff, confirm, apply, **rebuild and retry against the
+build error** if it fails (up to `--max-attempts`, default 3), and end
+with a checkpoint commit on success — or **revert everything this run
+changed** if every attempt still fails to build, so nothing is ever left
+half-applied. All three require `ANTHROPIC_API_KEY` and a clean git
+working tree to safely apply against — like `cmaker heal --apply`, they
+don't just refuse if you don't have one: no git repository at all gets a
+temporary one bootstrapped (kept afterward if the run succeeds, since
+that's where the checkpoint commit lives; removed again otherwise), and a
+real-but-dirty repository gets a temporary commit that's undone afterward,
+landing your original changes (plus whatever this run applied) back in
+the working tree, staged, rather than committed (see
+[above](#buildrun-logs-and-ai-assisted-healing-cmaker-logs--cmaker-heal)
+for the same mechanism in more detail).
+
+**`cmaker codegen`** is the general case — a single free-form change
+request, or a task pulled from a `cmaker suggest --export` checklist:
+
+```bash
+cmaker codegen --intent="add a --verbose flag that prints every cmake invocation"
+cmaker codegen --intent="refactor error handling to use Result<T>" --deep --plan
+cmaker codegen --intent-from=.cmaker/suggestions.md   # pull the first unmarked item from a checklist
+cmaker codegen --intent-from=:3                        # pull item #3 specifically
+cmaker codegen --intent-from --watch                   # keep completing tasks until none remain or one fails
+```
+
+- `--deep` uses a stronger model and asks clarifying questions first
+  instead of guessing, when it has any.
+- `--plan` shows a short per-file plan and asks you to confirm *that*
+  before it spends the effort actually authoring the change — an earlier,
+  cheaper confirmation gate on top of the usual diff confirmation.
+- `--intent-from` tasks judged too large for one shot get broken into
+  sub-checkboxes in the same checklist file, and the first sub-task is
+  taken up; on success the completed item is checked off.
+- `--watch` (only with `--intent-from`, and only without a specific
+  `:<num>`) keeps pulling and completing tasks one after another instead
+  of stopping after one.
+
+**`cmaker fix "<bug description>"`** is `cmaker heal`'s sibling for bugs
+that *don't* show up as a compile/run failure — describe what's wrong in
+plain English, and it finds the relevant file(s) itself using the exact
+same propose/diff/confirm/apply/build-fix-loop/checkpoint machinery as
+`codegen` above:
+
+```bash
+cmaker fix "the linked list's sum() function returns the wrong total for an empty list"
+cmaker fix "crashes on startup if the config file has an empty description field" --deep
+```
+
+Use `cmaker heal` instead when there's already a failing build/run log to
+diagnose from (see [above](#buildrun-logs-and-ai-assisted-healing-cmaker-logs--cmaker-heal))
+— that's a narrower starting point than `fix`'s project-wide file search.
+
+**`cmaker migrate --dependency=<name> --to=<version>`** bumps one
+dependency's pinned version in `cmaker.yaml`, regenerates
+`CMakeLists.txt`, and patches any call-sites that need to change for
+compatibility — renamed/removed APIs, changed signatures:
+
+```bash
+cmaker migrate --dependency=fmt --to=10.2.1
+cmaker migrate --dependency=nlohmann_json --to=v3.11.3 --deep
+```
+
+A much narrower, more tractable slice of "agentic" than `codegen` — the
+change set is scoped to one dependency bump. If no call-sites need
+changing at all, the version bump alone is still verified and committed —
+that's a valid, complete migration, not a no-op. Declining a proposed
+call-site diff, or exhausting `--max-attempts`, reverts *everything*
+this run changed, including the version bump itself.
+
+`--deep`/`--plan`/`--model`/`--max-attempts` mean the same thing across
+`codegen`/`fix`/`migrate` (see `--help` on each for the full list).
+
+---
+
+## Git integration
+
+A set of git-workflow helpers that sit alongside cmaker's build tooling,
+plus an escape hatch for everything else:
+
+```bash
+cmaker commit                 # stage everything, LLM-generate a commit message, confirm, commit
+cmaker commit -m "..."        # skip LLM generation, use this message
+cmaker commit --preview       # edit the (generated or given) message inline before committing
+cmaker commit --auto          # skip the confirmation and commit immediately
+
+cmaker push                   # forwards straight to 'git push' with whatever args you give it
+cmaker push --auto            # stage + LLM-commit + push in one step (sets upstream on a brand-new branch)
+
+cmaker newbranch --name=my-feature       # create + check out a new branch
+cmaker newbranch                          # LLM-generated 'f-<slug>' name from your current changes
+cmaker newbranch --from=main --autopush  # branch from main, then auto-commit + push it
+
+cmaker git -- log --oneline -5           # run any git command directly, no name collisions
+```
+
+- **`cmaker commit`**'s LLM-generated message (Anthropic; requires
+  `ANTHROPIC_API_KEY`) is always printed and confirmed before committing,
+  unless `--auto`/`--preview` is given.
+- **`cmaker push`** without `--auto` is a plain passthrough to `git push`
+  (arbitrary flags forwarded as-is, e.g. `cmaker push -u origin main`).
+  `--auto` additionally stages, LLM-commits (no confirmation, same as
+  `cmaker commit --auto`), and pushes.
+- **`cmaker newbranch`**'s name inference tries your uncommitted
+  working-tree changes first, then (if there are none) whatever's been
+  committed on the current branch but not yet on `--from`; if there's
+  nothing to infer from either way, pass `--name` explicitly.
+  `--autocommit` commits on the new branch (no push); `--autopush` also
+  pushes and sets the upstream.
+- **`cmaker git -- <args...>`** forwards everything after `git` straight
+  to the real `git` binary — the universal escape hatch for any git
+  subcommand cmaker doesn't already handle, including `cmaker git init`/
+  `cmaker git add -A`/`cmaker git clean -fd`, which are distinct from bare
+  `cmaker init`/`add`/`clean` (cmaker's own scaffold/dependency/build-dir
+  commands) — pass `--git` to those directly instead if you want the real
+  git command, e.g. `cmaker clean --git -fd`.
+
+**`cmaker dummygit`** bootstraps a throwaway git repo (init + commit
+everything as a baseline) so git-dependent tooling like `cmaker heal
+--apply` has a clean tree to work against — the same bootstrap `heal
+--apply`/`codegen`/`fix`/`migrate` already run automatically when there's
+no repository at all (see
+[above](#buildrun-logs-and-ai-assisted-healing-cmaker-logs--cmaker-heal)).
+Refuses to run inside an already-real git repository, so it only ever
+creates one where none exists yet; nothing removes it automatically
+afterward — `cmaker remove git` when you're done with it.
+
+**`cmaker remove git`** deletes `.git` outright — every commit, branch,
+and stash, not just the untracked files `cmaker clean --git -fd` (`git
+clean`) touches; git clean never removes `.git` itself, so this is the
+actual teardown for a scratch repo `cmaker dummygit` made, or one the
+bootstrap above created automatically. Asks for confirmation unless
+`--force` is given — this is irreversible unless you have a remote or
+another local copy to recover from.
+
+```bash
+cmaker remove git            # asks "Remove .git? [y/N]" first
+cmaker remove git --force    # no confirmation
+```
+
+---
+
+## cmaker packs: publishing and installing reusable packages
+
+Beyond the curated, built-in [package registry](#package-install-a-real-dependency-manager-ux),
+`cmaker packs` is a hosted registry for publishing and installing your own
+reusable C/C++ artifacts — a function, a class, or a whole directory,
+bundled with a `manifest.yaml`. It's currently **invite-only** (login is
+gated by an allowlist) while it's still early; the built-in registry
+above needs no account and works for everyone regardless.
+
+```bash
+cmaker login                          # GitHub device-flow login (same UX as the gh/docker CLIs)
+cmaker whoami                         # show which account you're logged in as
+cmaker logout                         # revoke the current token
+
+cmaker new my-json-helpers --pack     # scaffold a publishable pack (manifest.yaml + starter files)
+cmaker publish                        # package the current directory and publish it
+cmaker publish ./my-json-helpers      # or publish a specific directory
+
+cmaker install some-pack              # falls back to the packs registry if a name isn't in the built-in one
+cmaker search some-term --remote      # also search the packs registry, not just the built-in one
+```
+
+- **`cmaker login`** never stores your GitHub token — only cmaker's own
+  opaque, revocable API token is saved, to `~/.cmaker/credentials`
+  (deliberately separate from `~/.cmaker/env`'s Anthropic API key).
+- **`cmaker publish`** packages the target directory (which must contain
+  a `manifest.yaml` — see `cmaker new <name> --pack`) into a tarball,
+  registers the version, and uploads it. Versions are immutable once
+  published — republishing an already-published version is rejected; bump
+  `manifest.yaml`'s `version` field instead. Requires `cmaker login` first.
+- **`cmaker install <name>`** only falls back to the packs registry after
+  the built-in registry misses — the built-in, curated registry always
+  takes priority, so a pack can never silently shadow a curated entry.
+  Falling back requires `cmaker login`; without it you get today's usual
+  "not found" error plus a hint to log in.
+- **`cmaker search <term> --remote`** is opt-in on purpose — the
+  unflagged default stays scoped to the built-in, curated registry, so
+  "curated" and "anyone's upload" are never conflated by default.
+
+Installed packs are recorded in `cmaker.lock` alongside CPM dependencies
+(see [The lockfile](#package-install-a-real-dependency-manager-ux)), so a
+teammate cloning the project gets the exact same pinned pack versions.
 
 ---
 
@@ -1390,6 +1754,8 @@ Scaffold a new project into `./<name>` (defaults to `MyProject` if omitted).
 - `--with-benchmarks` — add a `bench/` directory wired to Google Benchmark (see [above](#coverage-benchmarks-docs-and-docker))
 - `--with-docs` — scaffold a `Doxyfile` (see [above](#coverage-benchmarks-docs-and-docker))
 - `--with-docker` — scaffold a `Dockerfile` + devcontainer (see [above](#coverage-benchmarks-docs-and-docker))
+- `--nogit` — skip auto-initializing a git repository (and initial commit) for the new project (see [Core commands](#core-commands))
+- `--pack` — scaffold a publishable pack (`manifest.yaml` + starter files for `cmaker publish`) instead of a buildable CMake project (see [cmaker packs](#cmaker-packs-publishing-and-installing-reusable-packages))
 </details>
 
 <details>
@@ -1481,6 +1847,9 @@ them — checks `cargo`/`rustc`/`zig` too.
   the Anthropic API. Never affects `doctor`'s exit code — AI-assisted
   commands are meant to degrade gracefully when unconfigured, not block
   "cmaker is installed and usable."
+- `--docs` — also scan existing Doxygen comment blocks for drift (`@param`
+  entries that no longer match a function's real parameters, or real
+  parameters missing an `@param`) — see [above](#coverage-benchmarks-docs-and-docker)
 </details>
 
 <details>
@@ -1518,11 +1887,17 @@ Builds (Release) and runs `bench/*.cpp` via Google Benchmark (see
 </details>
 
 <details>
-<summary><code>cmaker docs</code></summary>
+<summary><code>cmaker docs [flags]</code></summary>
 
 Builds API documentation with Doxygen (see
 [above](#coverage-benchmarks-docs-and-docker)). Writes a default
 `Doxyfile` on the fly if none exists yet.
+
+- `--narrative` — generate LLM-authored narrative docs instead of building Doxygen HTML (requires `ANTHROPIC_API_KEY`)
+- `--file string` — with `--narrative`: only narrate this one file, instead of the whole project
+- `--out string` — with `--narrative`: output directory for generated docs (default `docs/narrative`)
+- `--max-files int` — with `--narrative` (whole-project mode): cap how many files get their own narrative doc (default `15`)
+- `--model string` — override the Anthropic model used with `--narrative`
 </details>
 
 <details>
@@ -1568,6 +1943,10 @@ next configure (see
 - `--link strings` — CMake target(s) to link, e.g. `--link=fmt::fmt` (required with `--git`; comma-separate for multiple)
 - `--options strings` — extra `CPMAddPackage` `OPTIONS` lines (only with `--git`)
 - `--download-only` — fetch source but don't `add_subdirectory` it (only with `--git`)
+
+If `<name>` isn't found in the built-in registry, falls back to the
+[cmaker packs](#cmaker-packs-publishing-and-installing-reusable-packages)
+remote registry (requires `cmaker login`).
 </details>
 
 <details>
@@ -1585,11 +1964,13 @@ Lists every dependency currently declared in `cmaker.yaml`.
 </details>
 
 <details>
-<summary><code>cmaker search &lt;term&gt;</code></summary>
+<summary><code>cmaker search &lt;term&gt; [flags]</code></summary>
 
 Searches the package registry by name or description — built-in plus any
 user-local overlay (`~/.cmaker/registry.yaml`), labeled by source (see
 [Extensibility](#extensibility-your-own-templates-and-registry-entries)).
+
+- `--remote` — also search the [cmaker packs](#cmaker-packs-publishing-and-installing-reusable-packages) remote registry (requires `cmaker login`)
 </details>
 
 <details>
@@ -1630,8 +2011,17 @@ Requires `ANTHROPIC_API_KEY`. Nothing is written to disk unless `--apply`
 is given.
 
 - `--kind string` — only consider `build` or `run` failures (default: either, most recent wins)
-- `--model string` — override the Anthropic model used
-- `--apply` — apply the suggested fix (after confirmation, unless reusing an already-reviewed diagnosis) and rebuild to verify it; requires a clean git working tree
+- `--model string` — override the Anthropic model used (skips model-escalation steps, keeping this model throughout)
+- `--apply` — apply the suggested fix (after confirmation, unless reusing an already-reviewed diagnosis) and rebuild to verify it — bootstraps or temporarily commits to get a clean git baseline if needed
+</details>
+
+<details>
+<summary><code>cmaker dummygit</code></summary>
+
+Bootstraps a throwaway git repo (init + commit everything as a baseline)
+so git-dependent tooling like `cmaker heal --apply` has one (see
+[above](#git-integration)). Refuses to run inside an already-real git
+repository.
 </details>
 
 <details>
@@ -1645,6 +2035,260 @@ Explains something about the current project in plain English (see
 `dependency=<name>`, `lastError`, `diff`, or `config`.
 
 - `--model string` — override the Anthropic model used
+</details>
+
+<details>
+<summary><code>cmaker read &lt;target&gt; [flags]</code></summary>
+
+Prints the matched code with terminal syntax highlighting (see
+[above](#reading-editing-and-improving-code)). `<target>` is one of
+`class=<Name>`, `function=<name>`, `file=<path>`, or `lastError`. Never
+writes anything to disk.
+
+- `--explain` — add inline explanatory comments around the code (LLM-assisted; requires `ANTHROPIC_API_KEY`; the code itself is never rewritten)
+- `--model string` — override the Anthropic model used with `--explain`
+</details>
+
+<details>
+<summary><code>cmaker edit &lt;target&gt;</code></summary>
+
+Opens the matched code in an inline, nano-like terminal editor (see
+[above](#reading-editing-and-improving-code)). `<target>` is one of
+`class=<Name>`, `function=<name>`, or `file=<path>`. No LLM involved.
+</details>
+
+<details>
+<summary><code>cmaker review</code></summary>
+
+Critiques every uncommitted change for likely bugs, missing error
+handling, and edge cases (see
+[above](#reading-editing-and-improving-code)). Requires
+`ANTHROPIC_API_KEY`. Never writes anything to disk.
+
+- `--model string` — override the Anthropic model used
+</details>
+
+<details>
+<summary><code>cmaker suggest [flags]</code></summary>
+
+Reviews the whole project and suggests concrete improvements (see
+[above](#reading-editing-and-improving-code)). Requires
+`ANTHROPIC_API_KEY`. Never writes anything to disk (unless `--export` is given).
+
+- `--export string` — write the suggestions as a markdown checklist to this file instead of printing them
+- `--model string` — override the Anthropic model used
+</details>
+
+<details>
+<summary><code>cmaker suggest next [--file=...]</code></summary>
+
+Shows the next unmarked item in a checklist (see
+[above](#reading-editing-and-improving-code)).
+
+- `--file string` — the checklist file to use (default `.cmaker/suggestions.md`)
+</details>
+
+<details>
+<summary><code>cmaker suggest list [--file=...]</code> (alias <code>cmaker suggest ls</code>)</summary>
+
+Lists every suggestion in a checklist, checked and unchecked, numbered for
+use with `remove`/`done`/`undone`.
+
+- `--file string` — the checklist file to use (default `.cmaker/suggestions.md`)
+</details>
+
+<details>
+<summary><code>cmaker suggest add "&lt;text&gt;" [flags]</code></summary>
+
+Manually appends a new unchecked item to a checklist, creating the file
+(and its parent directory) if it doesn't exist yet.
+
+- `--detail string` — an optional one or two sentences of specifics for this suggestion
+- `--file string` — the checklist file to use (default `.cmaker/suggestions.md`)
+</details>
+
+<details>
+<summary><code>cmaker suggest remove &lt;num&gt; [--file=...]</code></summary>
+
+Deletes the num'th (1-based, as shown by `cmaker suggest list`) top-level
+suggestion — its own line, detail, and any sub-tasks together.
+
+- `--file string` — the checklist file to use (default `.cmaker/suggestions.md`)
+</details>
+
+<details>
+<summary><code>cmaker suggest done &lt;num&gt; [--file=...]</code></summary>
+
+Checks off the num'th top-level suggestion (and every one of its
+sub-tasks, if broken down).
+
+- `--file string` — the checklist file to use (default `.cmaker/suggestions.md`)
+</details>
+
+<details>
+<summary><code>cmaker suggest undone &lt;num&gt; [--file=...]</code></summary>
+
+Unchecks the num'th top-level suggestion (and every one of its sub-tasks,
+if broken down).
+
+- `--file string` — the checklist file to use (default `.cmaker/suggestions.md`)
+</details>
+
+<details>
+<summary><code>cmaker document &lt;target&gt; [flags]</code></summary>
+
+Generates a Doxygen comment block for a function or class (see
+[above](#reading-editing-and-improving-code)). `<target>` is one of
+`function=<name>` or `class=<Name>`. Requires `ANTHROPIC_API_KEY`.
+
+- `--apply` — apply the generated comment (after confirmation) instead of just showing the diff
+- `--model string` — override the Anthropic model used
+</details>
+
+<details>
+<summary><code>cmaker improve &lt;target&gt; --intent="..." [flags]</code></summary>
+
+Asks an LLM to improve a single function or class given an intent (see
+[above](#reading-editing-and-improving-code)). `<target>` is one of
+`function=<name>` or `class=<Name>`. Requires `ANTHROPIC_API_KEY`.
+
+- `--intent string` — what the improvement should accomplish (required)
+- `--apply` — apply the change (after confirmation) instead of just showing the diff
+- `--strict` — scope the change to exactly the function/class body — no new headers/helpers/files
+- `--model string` — override the Anthropic model used
+</details>
+
+<details>
+<summary><code>cmaker codegen --intent="..." | --intent-from=[flags]</code></summary>
+
+Agentic, whole-project code change from a free-form intent (see
+[above](#agentic-code-changes-codegen--fix--migrate)). Requires
+`ANTHROPIC_API_KEY` and a clean git working tree (bootstraps or
+temporarily commits to get one if needed, like `cmaker heal --apply`).
+
+- `--intent string` — a single free-form change request
+- `--intent-from string` — pull a task from a `cmaker suggest --export` checklist: `[<file>][:<num>]` (default file `.cmaker/suggestions.md`; default: first unmarked item)
+- `--deep` — use a stronger model and ask clarifying questions before implementing
+- `--plan` — ask for and confirm a short per-file plan before authoring the actual change
+- `--watch` — with `--intent-from` (no `:<num>`): keep completing tasks until none remain or one fails
+- `--model string` — override the Anthropic model used
+- `--max-attempts int` — give up (and revert) after this many failed build-fix attempts (default `3`)
+</details>
+
+<details>
+<summary><code>cmaker fix "&lt;bug description&gt;" [flags]</code></summary>
+
+Natural-language bug report → LLM-proposed fix, no failing build log
+required (see [above](#agentic-code-changes-codegen--fix--migrate)).
+Requires `ANTHROPIC_API_KEY` and a clean git working tree (bootstraps or
+temporarily commits to get one if needed, like `cmaker heal --apply`).
+
+- `--deep` — use a stronger model and ask clarifying questions before implementing
+- `--plan` — ask for and confirm a short per-file plan before authoring the actual fix
+- `--model string` — override the Anthropic model used
+- `--max-attempts int` — give up (and revert) after this many failed build-fix attempts (default `3`)
+</details>
+
+<details>
+<summary><code>cmaker migrate --dependency=&lt;name&gt; --to=&lt;version&gt; [flags]</code></summary>
+
+Bumps one dependency's pinned version and patches call-sites that changed
+(see [above](#agentic-code-changes-codegen--fix--migrate)). Requires
+`ANTHROPIC_API_KEY` and a clean git working tree (bootstraps or
+temporarily commits to get one if needed, like `cmaker heal --apply`).
+
+- `--dependency string` — the dependency name, exactly as it appears in `cmaker.yaml`'s `dependencies:` list (required)
+- `--to string` — the version/tag to migrate to (required)
+- `--deep` — use a stronger model and ask clarifying questions before implementing
+- `--plan` — ask for and confirm a short per-file plan before patching call-sites
+- `--model string` — override the Anthropic model used
+- `--max-attempts int` — give up (and revert everything) after this many failed build-fix attempts (default `3`)
+</details>
+
+<details>
+<summary><code>cmaker commit [flags]</code></summary>
+
+Stages every change and commits it, generating the message via LLM unless
+`-m` is given (see [above](#git-integration)).
+
+- `-m`, `--message string` — commit message (skips LLM generation)
+- `--preview` — edit the message inline in the terminal before committing
+- `--auto` — commit immediately, skipping the confirmation prompt
+- `--model string` — override the Anthropic model used to generate the message
+</details>
+
+<details>
+<summary><code>cmaker push -- [git push args...] [--auto]</code></summary>
+
+Without `--auto`, forwards straight to `git push` with whatever args you
+give it. With `--auto`, stages + LLM-commits + pushes in one step (see
+[above](#git-integration)).
+</details>
+
+<details>
+<summary><code>cmaker newbranch [flags]</code></summary>
+
+Creates and checks out a new branch, optionally auto-naming/committing/
+pushing it (see [above](#git-integration)).
+
+- `--name string` — new branch name (default: LLM-generated `f-<slug>` from your current changes)
+- `--from string` — branch to create from (default: the current branch)
+- `--autopush` — also auto-commit and push the new branch upstream
+- `--autocommit` — also auto-commit (no push) on the new branch
+- `--model string` — override the Anthropic model used for name/message generation
+</details>
+
+<details>
+<summary><code>cmaker git -- &lt;git args...&gt;</code></summary>
+
+Forwards everything after `git` straight to the real `git` binary — the
+universal escape hatch (see [above](#git-integration)).
+</details>
+
+<details>
+<summary><code>cmaker remove git [--force]</code></summary>
+
+Deletes `.git` from the current project entirely — every commit, branch,
+and stash, not just untracked files (see [above](#git-integration)).
+Irreversible unless you have a remote or another local copy.
+
+- `--force` — skip the confirmation prompt
+</details>
+
+<details>
+<summary><code>cmaker login [flags]</code></summary>
+
+Logs in to the cmaker packs registry via GitHub's device flow (see
+[above](#cmaker-packs-publishing-and-installing-reusable-packages)).
+
+- `--server string` — override the cmaker packs API server URL
+</details>
+
+<details>
+<summary><code>cmaker logout [flags]</code></summary>
+
+Logs out of cmaker packs and revokes the current token.
+
+- `--server string` — override the cmaker packs API server URL
+</details>
+
+<details>
+<summary><code>cmaker whoami [flags]</code></summary>
+
+Shows which cmaker packs account you're logged in as.
+
+- `--server string` — override the cmaker packs API server URL
+</details>
+
+<details>
+<summary><code>cmaker publish [path] [flags]</code></summary>
+
+Publishes a pack (a directory containing `manifest.yaml`, default: the
+current directory) to the cmaker packs registry (see
+[above](#cmaker-packs-publishing-and-installing-reusable-packages)).
+Requires `cmaker login` first.
+
+- `--server string` — override the cmaker packs API server URL
 </details>
 
 <details>
@@ -1671,12 +2315,25 @@ myapp/
 ├── build/                # cmake's build directory (safe to delete: cmaker clean)
 ├── .cmaker/logs/          # build/run log captures, gitignored (see 'cmaker logs'/'cmaker heal')
 ├── .cmaker/heal/          # cached 'cmaker heal' diagnosis, gitignored (see 'cmaker heal --apply')
+├── .cmaker/suggestions.md # default 'cmaker suggest --export'/'suggest add' checklist (see 'cmaker suggest list'/'codegen --intent-from')
+├── .git/                 # auto-initialized with an initial commit, unless --nogit (see 'cmaker new --help')
 ├── rust/                 # only if --with-rust
 ├── zig/                  # only if --with-zig
 ├── bench/                # only if --with-benchmarks (see 'cmaker bench')
 ├── Doxyfile              # only if --with-docs (see 'cmaker docs')
 └── Dockerfile            # only if --with-docker (+ .dockerignore, .devcontainer/)
 ```
+
+`cmaker new <name> --pack` scaffolds a different, much smaller layout — a
+publishable pack, not a buildable CMake project — just `manifest.yaml`
+plus whatever source files it declares (see
+[cmaker packs](#cmaker-packs-publishing-and-installing-reusable-packages)).
+
+Two files live outside any project, under your home directory:
+`~/.cmaker/env` (Anthropic API key, see [Install](#install)) and
+`~/.cmaker/credentials` (cmaker packs login token, see
+[cmaker packs](#cmaker-packs-publishing-and-installing-reusable-packages))
+— deliberately separate files, never mixed.
 
 ---
 

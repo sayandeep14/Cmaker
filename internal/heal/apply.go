@@ -94,9 +94,40 @@ func SafetyCommit(root string) error {
 // UndoSafetyCommit soft-resets the commit SafetyCommit made - "soft" so
 // its changes land back in the working tree (staged) rather than being
 // discarded, restoring the pre-commit dirty state instead of erasing it.
+// Assumes exactly one commit was made since SafetyCommit; a caller that
+// might commit again on top of it (e.g. codegen's own checkpoint commit)
+// should use CurrentHead/ResetSoftTo instead, which don't make that
+// assumption.
 func UndoSafetyCommit(root string) error {
 	if err := runGitStep([]string{"-C", root, "reset", "--soft", "HEAD~1"}); err != nil {
 		return fmt.Errorf("failed to undo safety commit: %w", err)
+	}
+	return nil
+}
+
+// CurrentHead returns root's current HEAD commit hash - callers use this
+// to capture a baseline ref right before SafetyCommit, so ResetSoftTo can
+// later undo an arbitrary number of commits made on top (e.g. the safety
+// commit itself, plus a real checkpoint commit an agentic command made
+// after applying its own change), rather than assuming exactly one commit
+// like UndoSafetyCommit's hard-coded HEAD~1 does.
+func CurrentHead(root string) (string, error) {
+	out, err := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to read current HEAD in %s: %w", root, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// ResetSoftTo soft-resets root back to ref - the general form of
+// UndoSafetyCommit for a caller that may have made more than one commit on
+// top of a safety commit (e.g. a safety commit followed by a real
+// checkpoint commit): every commit made since ref lands back in the
+// working tree, staged, as a single combined diff rather than being
+// discarded.
+func ResetSoftTo(root, ref string) error {
+	if err := runGitStep([]string{"-C", root, "reset", "--soft", ref}); err != nil {
+		return fmt.Errorf("failed to reset %s to %s: %w", root, ref, err)
 	}
 	return nil
 }

@@ -156,6 +156,109 @@ func TestInsertSubtasks(t *testing.T) {
 	}
 }
 
+func TestSetTopLevelCheckedCascadesToChildren(t *testing.T) {
+	data := "- [ ] Big task\n  - [ ] sub one\n  - [ ] sub two\n- [ ] Other task\n"
+	items := ParseChecklist([]byte(data))
+	updated, err := SetTopLevelChecked([]byte(data), items, 1, true)
+	if err != nil {
+		t.Fatalf("SetTopLevelChecked() error = %v", err)
+	}
+	reparsed := ParseChecklist(updated)
+	if !reparsed[0].Checked {
+		t.Error("SetTopLevelChecked() didn't check the parent")
+	}
+	for _, c := range reparsed[0].Children {
+		if !c.Checked {
+			t.Errorf("SetTopLevelChecked() didn't cascade to child %q", c.Text)
+		}
+	}
+	if reparsed[1].Checked {
+		t.Error("SetTopLevelChecked() should leave unrelated items untouched")
+	}
+}
+
+func TestSetTopLevelCheckedOutOfRange(t *testing.T) {
+	items := ParseChecklist([]byte(sampleChecklist))
+	if _, err := SetTopLevelChecked([]byte(sampleChecklist), items, 99, true); err == nil {
+		t.Error("SetTopLevelChecked() with an out-of-range index: expected an error, got nil")
+	}
+}
+
+func TestRemoveTopLevelItemMiddle(t *testing.T) {
+	items := ParseChecklist([]byte(sampleChecklist))
+	updated, err := RemoveTopLevelItem([]byte(sampleChecklist), items, 2)
+	if err != nil {
+		t.Fatalf("RemoveTopLevelItem() error = %v", err)
+	}
+	reparsed := ParseChecklist(updated)
+	if len(reparsed) != 2 {
+		t.Fatalf("RemoveTopLevelItem(2) = %d items left, want 2", len(reparsed))
+	}
+	if reparsed[0].Text != "Add bounds checking to parseArgs" || reparsed[1].Text != "Extract shared validation logic" {
+		t.Errorf("RemoveTopLevelItem(2) left %+v", reparsed)
+	}
+	if !strings.Contains(reparsed[0].Detail, "argv[2]") {
+		t.Error("RemoveTopLevelItem() should leave surviving items' detail intact")
+	}
+}
+
+func TestRemoveTopLevelItemRemovesItsChildren(t *testing.T) {
+	data := "- [ ] Big task\n  - [ ] sub one\n  - [ ] sub two\n- [ ] Other task\n"
+	items := ParseChecklist([]byte(data))
+	updated, err := RemoveTopLevelItem([]byte(data), items, 1)
+	if err != nil {
+		t.Fatalf("RemoveTopLevelItem() error = %v", err)
+	}
+	reparsed := ParseChecklist(updated)
+	if len(reparsed) != 1 || reparsed[0].Text != "Other task" {
+		t.Fatalf("RemoveTopLevelItem(1) left %+v, want just \"Other task\"", reparsed)
+	}
+}
+
+func TestRemoveTopLevelItemLast(t *testing.T) {
+	items := ParseChecklist([]byte(sampleChecklist))
+	updated, err := RemoveTopLevelItem([]byte(sampleChecklist), items, 3)
+	if err != nil {
+		t.Fatalf("RemoveTopLevelItem() error = %v", err)
+	}
+	reparsed := ParseChecklist(updated)
+	if len(reparsed) != 2 {
+		t.Fatalf("RemoveTopLevelItem(3) = %d items left, want 2", len(reparsed))
+	}
+}
+
+func TestRemoveTopLevelItemOutOfRange(t *testing.T) {
+	items := ParseChecklist([]byte(sampleChecklist))
+	if _, err := RemoveTopLevelItem([]byte(sampleChecklist), items, 0); err == nil {
+		t.Error("RemoveTopLevelItem(0): expected an error, got nil")
+	}
+}
+
+func TestAppendItemNoDetail(t *testing.T) {
+	updated := AppendItem([]byte("- [ ] existing\n"), "New task", "")
+	items := ParseChecklist(updated)
+	if len(items) != 2 {
+		t.Fatalf("AppendItem() = %d items, want 2", len(items))
+	}
+	if items[1].Text != "New task" {
+		t.Errorf("AppendItem() appended item text = %q", items[1].Text)
+	}
+	if items[1].Checked {
+		t.Error("AppendItem() should append an unchecked item")
+	}
+}
+
+func TestAppendItemWithDetail(t *testing.T) {
+	updated := AppendItem(nil, "New task", "Some detail here.")
+	items := ParseChecklist(updated)
+	if len(items) != 1 {
+		t.Fatalf("AppendItem() on empty data = %d items, want 1", len(items))
+	}
+	if !strings.Contains(items[0].Detail, "Some detail here.") {
+		t.Errorf("AppendItem() detail = %q", items[0].Detail)
+	}
+}
+
 func TestParseChecklistEmpty(t *testing.T) {
 	items := ParseChecklist([]byte("# cmaker suggest\n\nNo suggestions.\n"))
 	if len(items) != 0 {

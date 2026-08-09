@@ -148,6 +148,68 @@ func SetChecked(data []byte, item *Item, checked bool) []byte {
 	return []byte(strings.Join(lines, "\n"))
 }
 
+// SetTopLevelChecked returns data with the num'th (1-based) top-level
+// item's checkbox set to checked, cascading to every one of its children
+// too (if it's been broken down) - the manual-entry counterpart to
+// cmd/codegen.go's own done-marking, which only ever checks off one leaf
+// at a time. Safe to call SetChecked repeatedly against items parsed from
+// the same original data: it only ever rewrites a checkbox mark in place
+// ("[ ]" <-> "[x]", both 3 characters), so it never shifts any other
+// item's Line.
+func SetTopLevelChecked(data []byte, items []*Item, num int, checked bool) ([]byte, error) {
+	if num < 1 || num > len(items) {
+		return nil, fmt.Errorf("suggestion #%d out of range - there are %d top-level suggestions", num, len(items))
+	}
+	item := items[num-1]
+	updated := SetChecked(data, item, checked)
+	for _, c := range item.Children {
+		updated = SetChecked(updated, c, checked)
+	}
+	return updated, nil
+}
+
+// RemoveTopLevelItem returns data with the num'th (1-based) top-level item
+// removed entirely - its own checkbox line, any detail paragraph beneath
+// it, and any sub-tasks a breakdown inserted under it (everything from its
+// own line up to, but not including, the next top-level item's line, or
+// EOF if it's the last one).
+func RemoveTopLevelItem(data []byte, items []*Item, num int) ([]byte, error) {
+	if num < 1 || num > len(items) {
+		return nil, fmt.Errorf("suggestion #%d out of range - there are %d top-level suggestions", num, len(items))
+	}
+	item := items[num-1]
+	lines := strings.Split(string(data), "\n")
+	if item.Line < 0 || item.Line >= len(lines) {
+		return nil, fmt.Errorf("internal error: suggestion #%d's line is out of range", num)
+	}
+	end := len(lines)
+	if num < len(items) {
+		end = items[num].Line
+	}
+	result := make([]string, 0, len(lines)-(end-item.Line))
+	result = append(result, lines[:item.Line]...)
+	result = append(result, lines[end:]...)
+	return []byte(strings.Join(result, "\n")), nil
+}
+
+// AppendItem returns data with a new top-level "- [ ] <title>" checklist
+// item appended at the end (optionally followed by an indented detail
+// paragraph) - the manual-entry counterpart to RenderChecklist's
+// LLM-sourced items, so a hand-typed item looks identical to one the model
+// proposed and both round-trip through ParseChecklist the same way.
+func AppendItem(data []byte, title, detail string) []byte {
+	var b strings.Builder
+	b.Write(data)
+	if b.Len() > 0 && !strings.HasSuffix(string(data), "\n") {
+		b.WriteString("\n")
+	}
+	fmt.Fprintf(&b, "- [ ] %s\n", strings.TrimSpace(title))
+	if detail != "" {
+		fmt.Fprintf(&b, "\n  %s\n\n", strings.TrimSpace(detail))
+	}
+	return []byte(b.String())
+}
+
 // InsertSubtasks returns data with subtasks inserted as new 2-space-indented
 // "  - [ ] <text>" checklist lines - used when AssessBreakdown
 // (internal/agentic) decides a task is too large for one shot. Inserted

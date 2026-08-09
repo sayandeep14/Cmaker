@@ -127,6 +127,9 @@ func runInstall(name, gitURL, tag string, link, options []string, downloadOnly b
 			if len(suggestions) > 0 {
 				msg += fmt.Sprintf(" - did you mean: %s?", strings.Join(suggestions, ", "))
 			}
+			if token, _, credErr := packclient.LoadCredentials(); credErr == nil && token == "" {
+				msg += "\nNot logged in to cmaker packs - if this is a pack (not a built-in registry entry), run 'cmaker login' first."
+			}
 			msg += "\nFor a library not in the registry, use --git=<url> --tag=<tag> --link=<target>."
 			return fmt.Errorf("%s", msg)
 		}

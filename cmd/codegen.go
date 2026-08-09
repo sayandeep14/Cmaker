@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -93,6 +94,102 @@ var codegenCmd = &cobra.Command{
 // natural home alongside .cmaker/logs.
 const defaultSuggestionsFile = ".cmaker/suggestions.md"
 
+// gitBaseline tracks which temporary git bootstrap step (if any)
+// ensureGitBaseline used to get a clean working tree - shared by
+// codegen/fix (via runCodegenCore) and migrate, since every agentic
+// command that ends with its own checkpoint commit needs the identical
+// clean-baseline guarantee.
+type gitBaseline struct {
+	usedScratchRepo  bool
+	usedSafetyCommit bool
+	baseRef          string
+}
+
+// ensureGitBaseline makes "." ready for an agentic command's apply/build/
+// commit cycle: bootstraps a temporary git repo if there's none at all, or
+// makes a temporary commit over existing uncommitted changes if there is
+// one but it's dirty - the same bootstrap-or-safety-commit dance 'cmaker
+// heal --apply' already established (see cmd/heal.go's runHeal), reused
+// here instead of the hard "refuse unless already clean" cmaker
+// codegen/fix/migrate used to have.
+func ensureGitBaseline() (gitBaseline, error) {
+	if !heal.HasGitRepo(".") {
+		infof("No git repository here - bootstrapping a temporary one so this has a clean baseline (see 'cmaker dummygit')...")
+		if err := heal.InitScratchRepo("."); err != nil {
+			return gitBaseline{}, err
+		}
+		return gitBaseline{usedScratchRepo: true}, nil
+	}
+	clean, err := heal.WorkingTreeClean(".")
+	if err != nil {
+		return gitBaseline{}, err
+	}
+	if !clean {
+		ref, err := heal.CurrentHead(".")
+		if err != nil {
+			return gitBaseline{}, err
+		}
+		infof("Uncommitted changes found - making a temporary commit so this has a clean baseline (undone again once it finishes)...")
+		if err := heal.SafetyCommit("."); err != nil {
+			return gitBaseline{}, err
+		}
+		return gitBaseline{usedSafetyCommit: true, baseRef: ref}, nil
+	}
+	return gitBaseline{}, nil
+}
+
+// finish tears down whatever ensureGitBaseline set up, once the caller's
+// whole run (apply/build/checkpoint-commit) is over. A scratch repo
+// bootstrapped for a project that had none is only removed again if
+// nothing of value was left on top of its baseline commit (succeeded);
+// otherwise it's kept, so the checkpoint commit the caller just made
+// survives instead of being wiped along with .git. A safety commit is
+// always undone (soft reset to baseRef), landing every commit made since
+// then - the safety commit itself, plus a real checkpoint commit on top of
+// it if the run succeeded - back in the working tree, staged, exactly like
+// 'cmaker heal --apply' does with its own safety commit.
+func (b gitBaseline) finish(succeeded bool) {
+	if b.usedScratchRepo {
+		if succeeded {
+			infof("Initialized a git repository for this project (it had none) - committed on top of a baseline commit; see 'cmaker dummygit --help'.")
+			return
+		}
+		if err := heal.RemoveScratchRepo("."); err != nil {
+			warnf("failed to remove the temporary git repository: %v (remove .git by hand)", err)
+		}
+		return
+	}
+	if b.usedSafetyCommit {
+		if err := heal.ResetSoftTo(".", b.baseRef); err != nil {
+			warnf("failed to undo the temporary WIP commit: %v (run 'git reset --soft %s' by hand)", err, b.baseRef)
+			return
+		}
+		if succeeded {
+			warnf("Undid the temporary commit made before this run - your original uncommitted changes, plus the change just applied, are back in the working tree, staged (commit them yourself, e.g. with 'cmaker commit').")
+		} else {
+			warnf("Undid the temporary commit made before this run - your original uncommitted changes are back in the working tree, staged.")
+		}
+	}
+}
+
+// commitFileOnly stages and commits exactly path (not the whole working
+// tree) - used for cmaker's own bookkeeping writes to a suggestions
+// checklist (breaking a task down, checking one off) so they don't sit
+// around as uncommitted noise that would otherwise make the *next*
+// codegen/fix/migrate invocation think the working tree is dirty. Failures
+// are the caller's to decide how to handle (e.g. no git repo yet, or git
+// not configured with a user identity) - this only runs the two git
+// commands and reports success or a wrapped error.
+func commitFileOnly(path, message string) error {
+	if err := exec.Command("git", "add", "--", path).Run(); err != nil {
+		return fmt.Errorf("git add %s failed: %w", path, err)
+	}
+	if err := exec.Command("git", "commit", "-q", "-m", message, "--", path).Run(); err != nil {
+		return fmt.Errorf("git commit failed: %w", err)
+	}
+	return nil
+}
+
 // maxBuildLogChars bounds how much of a failing build log gets fed back
 // into a build-fix retry - matches internal/heal's own log-truncation
 // philosophy (the tail is what matters most).
@@ -123,16 +220,11 @@ func init() {
 // prompt for a broken-down sub-task still got it marked done in the
 // checklist file, having made no actual change at all.
 func runCodegenCore(intent string, deep, plan bool, model string, maxAttempts int) (succeeded bool, err error) {
-	if !isInsideGitRepo(".") {
-		return false, fmt.Errorf("not a git repository - codegen needs one so its changes can be safely checked and committed; run 'git init' first (or scaffold with 'cmaker new'/'init' without --nogit)")
-	}
-	clean, err := heal.WorkingTreeClean(".")
+	baseline, err := ensureGitBaseline()
 	if err != nil {
 		return false, err
 	}
-	if !clean {
-		return false, fmt.Errorf("'cmaker codegen' requires a clean git working tree (uncommitted changes found) - commit or stash first, then retry")
-	}
+	defer func() { baseline.finish(succeeded) }()
 
 	if model == "" {
 		if deep {
@@ -278,6 +370,14 @@ func runCodegenCore(intent string, deep, plan bool, model string, maxAttempts in
 		healStatus("Rebuilding to verify...")
 		if buildErr := runBuild(false, "", 0, ""); buildErr == nil {
 			okf("Build succeeded.")
+			if baseline.usedSafetyCommit {
+				// The working tree wasn't clean to begin with, so there's
+				// no clean baseline to diff a checkpoint commit against -
+				// baseline.finish (deferred above) will reset back to
+				// baseRef instead, landing this change in the working
+				// tree, staged, for the caller to commit themselves.
+				return true, nil
+			}
 			committed, cErr := autoCommitStaged(model)
 			if cErr != nil {
 				return false, cErr
@@ -552,6 +652,18 @@ func maybeBreakDownItem(filePath string, data []byte, item *suggest.Item, model 
 		return nil, nil, fmt.Errorf("failed to write %s: %w", filePath, err)
 	}
 	okf("Broke %q into %d sub-task(s) in %s.", item.Text, len(subtasks), filePath)
+	// Commit this bookkeeping edit on its own, if there's already a git
+	// repo to commit it to - otherwise it would sit around as uncommitted
+	// noise that made the very next step (ensureGitBaseline, inside
+	// runCodegenCore) think the working tree was dirty, when all that
+	// actually happened was cmaker updating its own checklist file. A
+	// failure here is a soft warning, not fatal - runCodegenCore's own
+	// baseline bootstrap handles a still-dirty tree gracefully either way.
+	if heal.HasGitRepo(".") {
+		if err := commitFileOnly(filePath, fmt.Sprintf("cmaker: break down suggestion %q into sub-tasks", item.Text)); err != nil {
+			warnf("failed to commit the checklist breakdown: %v (continuing anyway)", err)
+		}
+	}
 
 	reparsed := suggest.ParseChecklist(updated)
 	parent := findItemByLine(reparsed, item.Line)
@@ -591,6 +703,14 @@ func markChecklistItemDone(filePath string, _ []byte, item *suggest.Item) error 
 		return fmt.Errorf("failed to write %s: %w", filePath, err)
 	}
 	okf("Marked %q done in %s.", item.Text, filePath)
+	// Same reasoning as maybeBreakDownItem's own commit: keep this
+	// bookkeeping edit from lingering as uncommitted noise ahead of the
+	// next --watch iteration's own ensureGitBaseline check.
+	if heal.HasGitRepo(".") {
+		if err := commitFileOnly(filePath, fmt.Sprintf("cmaker: mark suggestion %q done", item.Text)); err != nil {
+			warnf("failed to commit the checklist update: %v (continuing anyway)", err)
+		}
+	}
 	return nil
 }
 

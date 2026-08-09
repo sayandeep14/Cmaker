@@ -51,7 +51,8 @@ var migrateCmd = &cobra.Command{
 		if maxAttempts < 1 {
 			return fmt.Errorf("--max-attempts must be at least 1")
 		}
-		return runMigrate(dependency, to, deep, plan, model, maxAttempts)
+		_, err := runMigrate(dependency, to, deep, plan, model, maxAttempts)
+		return err
 	},
 }
 
@@ -78,17 +79,12 @@ func init() {
 // runCodegenCore with a seeded touched file: that function's "nothing
 // proposed" and "user declined" paths are both plain no-ops, which is
 // right for codegen/fix but wrong here.
-func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int) error {
-	if !isInsideGitRepo(".") {
-		return fmt.Errorf("not a git repository - migrate needs one so its changes can be safely checked and committed; run 'git init' first (or scaffold with 'cmaker new'/'init' without --nogit)")
-	}
-	clean, err := heal.WorkingTreeClean(".")
+func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int) (succeeded bool, err error) {
+	baseline, err := ensureGitBaseline()
 	if err != nil {
-		return err
+		return false, err
 	}
-	if !clean {
-		return fmt.Errorf("'cmaker migrate' requires a clean git working tree (uncommitted changes found) - commit or stash first, then retry")
-	}
+	defer func() { baseline.finish(succeeded) }()
 
 	cfg := loadConfigOrExit()
 	depIdx := -1
@@ -99,7 +95,7 @@ func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int)
 		}
 	}
 	if depIdx == -1 {
-		return fmt.Errorf("no dependency named %q in cmaker.yaml's dependencies: list", name)
+		return false, fmt.Errorf("no dependency named %q in cmaker.yaml's dependencies: list", name)
 	}
 	oldVersion := cfg.Dependencies[depIdx].Tag
 	displayOld := oldVersion
@@ -108,12 +104,12 @@ func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int)
 	}
 	if oldVersion == to {
 		infof("%s is already pinned to %s.", name, to)
-		return nil
+		return false, nil
 	}
 
 	origYAML, err := os.ReadFile("cmaker.yaml")
 	if err != nil {
-		return fmt.Errorf("failed to read cmaker.yaml: %w", err)
+		return false, fmt.Errorf("failed to read cmaker.yaml: %w", err)
 	}
 	origCMakeLists, cmakeReadErr := os.ReadFile("CMakeLists.txt")
 	hadCMakeLists := cmakeReadErr == nil
@@ -128,11 +124,11 @@ func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int)
 
 	cfg.Dependencies[depIdx].Tag = to
 	if err := config.Save("cmaker.yaml", cfg); err != nil {
-		return fmt.Errorf("failed to save cmaker.yaml: %w", err)
+		return false, fmt.Errorf("failed to save cmaker.yaml: %w", err)
 	}
 	if err := cmake.Generate(".", cfg); err != nil {
 		os.WriteFile("cmaker.yaml", origYAML, 0644)
-		return fmt.Errorf("failed to regenerate CMakeLists.txt: %w", err)
+		return false, fmt.Errorf("failed to regenerate CMakeLists.txt: %w", err)
 	}
 	okf("Bumped %s: %s -> %s (cmaker.yaml and CMakeLists.txt updated).", name, displayOld, to)
 
@@ -160,13 +156,13 @@ func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int)
 	client, err := llm.NewClientFromEnv(model)
 	if err != nil {
 		revertVersionBump()
-		return err
+		return false, err
 	}
 
 	candidates, err := explain.WalkSourceFiles(".")
 	if err != nil {
 		revertVersionBump()
-		return err
+		return false, err
 	}
 
 	findIntent := fmt.Sprintf("Find files that use the %q library/dependency, since it was just upgraded from %s to %s.", name, displayOld, to)
@@ -174,7 +170,7 @@ func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int)
 	relevant, err := agentic.SuggestRelevantFiles(context.Background(), client, findIntent, candidates)
 	if err != nil {
 		revertVersionBump()
-		return err
+		return false, err
 	}
 
 	fixIntent := fmt.Sprintf("The dependency %q was just upgraded from %s to %s in this project. Update any call-sites in the given files that need to change for compatibility with the new version - renamed/removed APIs, changed function signatures, deprecated functions replaced, changed header paths, and similar. If nothing needs to change, make no changes.", name, displayOld, to)
@@ -184,7 +180,7 @@ func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int)
 		questions, err := agentic.AskClarifyingQuestions(context.Background(), client, fixIntent, candidates)
 		if err != nil {
 			revertVersionBump()
-			return err
+			return false, err
 		}
 		if len(questions) > 0 {
 			fixIntent = fixIntent + "\n\n" + collectAnswers(questions)
@@ -204,13 +200,13 @@ func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int)
 			planText, err := agentic.AskPlan(context.Background(), client, fixIntent, relevant)
 			if err != nil {
 				revertVersionBump()
-				return err
+				return false, err
 			}
 			fmt.Println(renderMarkdown(planText))
 			if !confirmYesNo("Proceed with this plan?") {
 				infof("Not proceeding - reverting the version bump too.")
 				revertVersionBump()
-				return nil
+				return false, nil
 			}
 		}
 
@@ -228,7 +224,7 @@ func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int)
 			if err != nil {
 				revertVersionBump()
 				revertTouched(touched)
-				return err
+				return false, err
 			}
 
 			if len(proposed) == 0 {
@@ -260,7 +256,7 @@ func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int)
 							infof("Not applied - reverting the version bump too.")
 							revertVersionBump()
 							revertTouched(touched)
-							return nil
+							return false, nil
 						}
 					}
 					for _, c := range toApply {
@@ -270,7 +266,7 @@ func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int)
 						if err := writeCodegenFile(c); err != nil {
 							revertVersionBump()
 							revertTouched(touched)
-							return err
+							return false, err
 						}
 						filesContent[c.path] = c.newContent
 					}
@@ -281,14 +277,14 @@ func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int)
 			healStatus("Rebuilding to verify...")
 			if buildErr := runBuild(false, "", 0, ""); buildErr == nil {
 				okf("Build succeeded.")
-				return commitMigration(model, name, to)
+				return commitMigration(model, name, to, baseline.usedSafetyCommit)
 			}
 
 			if attempt >= maxAttempts {
 				warnf("Still failing after %d attempt(s) - reverting everything, including the version bump.", maxAttempts)
 				revertVersionBump()
 				revertTouched(touched)
-				return fmt.Errorf("migrating %s to %s couldn't produce a working build after %d attempt(s); everything was reverted", name, to, maxAttempts)
+				return false, fmt.Errorf("migrating %s to %s couldn't produce a working build after %d attempt(s); everything was reverted", name, to, maxAttempts)
 			}
 			currentIntent = fmt.Sprintf("%s\n\nA previous attempt resulted in this build failure - fix it while keeping %s at version %s:\n%s", fixIntent, name, to, latestBuildLogSnippet())
 		}
@@ -296,7 +292,7 @@ func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int)
 		if !noCallSiteChangesNeeded {
 			// The loop above already returned (success, decline, or
 			// attempts-exhausted) for every other case.
-			return nil
+			return false, nil
 		}
 	}
 
@@ -307,23 +303,31 @@ func runMigrate(name, to string, deep, plan bool, model string, maxAttempts int)
 	if buildErr := runBuild(false, "", 0, ""); buildErr != nil {
 		warnf("The version bump alone doesn't build - reverting.")
 		revertVersionBump()
-		return fmt.Errorf("migrating %s to %s failed to build with no call-site changes proposed: %w", name, to, buildErr)
+		return false, fmt.Errorf("migrating %s to %s failed to build with no call-site changes proposed: %w", name, to, buildErr)
 	}
 	okf("Build succeeded.")
-	return commitMigration(model, name, to)
+	return commitMigration(model, name, to, baseline.usedSafetyCommit)
 }
 
 // commitMigration stages and commits everything currently in the working
 // tree (the version bump, plus any applied call-site changes) as this
-// migration's single checkpoint commit.
-func commitMigration(model, name, to string) error {
+// migration's single checkpoint commit - unless skipCommit (the working
+// tree wasn't clean to begin with, so ensureGitBaseline used a temporary
+// safety commit instead), in which case the caller's deferred
+// baseline.finish will reset back to its pre-migration ref, landing this
+// change in the working tree, staged, for the caller to commit themselves.
+func commitMigration(model, name, to string, skipCommit bool) (bool, error) {
+	if skipCommit {
+		okf("Migrated %s to %s.", name, to)
+		return true, nil
+	}
 	committed, err := autoCommitStaged(model)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !committed {
 		infof("Nothing to commit.")
 	}
 	okf("Migrated %s to %s.", name, to)
-	return nil
+	return true, nil
 }

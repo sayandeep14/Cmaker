@@ -18,8 +18,8 @@ var dummygitCmd = &cobra.Command{
 		"destroy real history - this only ever creates one where none exists yet.\n" +
 		"\n" +
 		"Nothing here removes the scratch repo automatically (unlike heal --apply's internal\n" +
-		"use, which tears it down itself once done) - run 'rm -rf .git' or 'cmaker clean --git'\n" +
-		"when you're finished with it.",
+		"use, which tears it down itself once done) - run 'cmaker remove git' when you're\n" +
+		"finished with it.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDummyGit()
@@ -33,6 +33,6 @@ func runDummyGit() error {
 	if err := heal.InitScratchRepo("."); err != nil {
 		return err
 	}
-	okf("Created a temporary git repository with everything committed as a baseline. Remove it with 'rm -rf .git' (or 'cmaker clean --git') when you no longer need it.")
+	okf("Created a temporary git repository with everything committed as a baseline. Remove it with 'cmaker remove git' when you no longer need it.")
 	return nil
 }
