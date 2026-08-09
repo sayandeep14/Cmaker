@@ -118,11 +118,19 @@ fi
 cd "$repo_root"
 
 # ---------- 4. build ----------
+#
+# github_client_id mirrors Makefile's/.goreleaser.yaml's own
+# GITHUB_CLIENT_ID - cmaker packs' OAuth App client ID for 'cmaker
+# login's device flow, a public identifier by GitHub's own design
+# (device flow needs no client secret), baked into every build the same
+# way main.version is, so 'cmaker login' works out of the box here too,
+# not just via `make build`/a goreleaser release.
 
 version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+github_client_id="Ov23liv0mQqsgNEcXkWZ"
 info "Building cmaker ($version)..."
 tmp_binary="$(mktemp "${TMPDIR:-/tmp}/cmaker-build.XXXXXX")"
-go build -ldflags "-s -w -X main.version=$version" -o "$tmp_binary" .
+go build -ldflags "-s -w -X main.version=$version -X cmaker/internal/packclient.GitHubClientID=$github_client_id" -o "$tmp_binary" .
 ok "Build succeeded"
 
 # ---------- 5. install ----------

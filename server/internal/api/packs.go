@@ -186,6 +186,11 @@ func (s *Server) handleCreateVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.publishLimiter.Allow(user.ID) {
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("publish rate limit exceeded - max %d per %s, try again later", publishRateLimitMax, publishRateLimitWindow))
+		return
+	}
+
 	pack, err := s.Store.GetPackByName(r.Context(), name)
 	switch {
 	case errors.Is(err, store.ErrNotFound):

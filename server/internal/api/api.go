@@ -44,16 +44,22 @@ type ObjectStore interface {
 
 // Server holds every handler's dependencies.
 type Server struct {
-	Store   Store
-	GitHub  githubapi.Verifier
-	Objects ObjectStore
-	Mux     *http.ServeMux
+	Store          Store
+	GitHub         githubapi.Verifier
+	Objects        ObjectStore
+	Mux            *http.ServeMux
+	publishLimiter *publishRateLimiter
+
+	// handler is Mux wrapped with loggingMiddleware - built once in New,
+	// not on every ServeHTTP call.
+	handler http.Handler
 }
 
 // New builds a Server with its routes registered.
 func New(st Store, gh githubapi.Verifier, objects ObjectStore) *Server {
-	s := &Server{Store: st, GitHub: gh, Objects: objects, Mux: http.NewServeMux()}
+	s := &Server{Store: st, GitHub: gh, Objects: objects, Mux: http.NewServeMux(), publishLimiter: newPublishRateLimiter()}
 	s.routes()
+	s.handler = loggingMiddleware(s.Mux)
 	return s
 }
 
@@ -71,5 +77,5 @@ func (s *Server) routes() {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.Mux.ServeHTTP(w, r)
+	s.handler.ServeHTTP(w, r)
 }

@@ -1,7 +1,12 @@
 BINARY      := cmaker
 INSTALL_DIR := /usr/local/bin
 VERSION     := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS     := -s -w -X main.version=$(VERSION)
+# GitHubClientID is cmaker packs' OAuth App client ID for 'cmaker login's
+# device flow - a public identifier by GitHub's own design (device flow
+# needs no client secret), safe to bake into every build the same way
+# main.version is, so 'cmaker login' works out of the box.
+GITHUB_CLIENT_ID := Ov23liv0mQqsgNEcXkWZ
+LDFLAGS     := -s -w -X main.version=$(VERSION) -X cmaker/internal/packclient.GitHubClientID=$(GITHUB_CLIENT_ID)
 
 .PHONY: build install uninstall test clean
 

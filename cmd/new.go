@@ -408,7 +408,7 @@ func scaffoldProject(root string, name string, templateName string, language str
 // so the default (non -v) error stays a short, actionable one-liner instead
 // of dumping raw CMake output.
 func firstLine(s string) string {
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
 			return trimmed
 		}

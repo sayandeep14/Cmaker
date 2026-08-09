@@ -13,6 +13,7 @@ import (
 	"cmaker/internal/audit"
 	"cmaker/internal/cmake"
 	"cmaker/internal/config"
+	"cmaker/internal/packclient"
 	"cmaker/internal/registry"
 )
 
@@ -63,7 +64,8 @@ var searchCmd = &cobra.Command{
 	Short: "Search the built-in package registry by name or description",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSearch(args[0])
+		remote, _ := cmd.Flags().GetBool("remote")
+		return runSearch(args[0], remote)
 	},
 }
 
@@ -72,6 +74,7 @@ func init() {
 	installCmd.Flags().String("tag", "", "git tag/branch to fetch (required with --git)")
 	installCmd.Flags().StringSlice("link", nil, "CMake target(s) to link, e.g. --link=fmt::fmt (required with --git; comma-separate for multiple)")
 	installCmd.Flags().StringSlice("options", nil, "extra CPMAddPackage OPTIONS lines (only with --git)")
+	searchCmd.Flags().Bool("remote", false, "also search the remote packs registry (requires 'cmaker login')")
 	installCmd.Flags().Bool("download-only", false, "fetch source but don't add_subdirectory it (only with --git; see cmaker.yaml's dependencies[].download_only)")
 	listCmd.Flags().Bool("licenses", false, "also look up each GitHub-hosted dependency's declared license (network call per dependency, see 'cmaker audit')")
 }
@@ -101,9 +104,28 @@ func runInstall(name, gitURL, tag string, link, options []string, downloadOnly b
 	} else {
 		entry, ok := registry.Find(name)
 		if !ok {
-			msg := fmt.Sprintf("%q isn't in cmaker's built-in registry (see 'cmaker search <term>')", name)
-			if close := registry.CloseMatches(name); len(close) > 0 {
-				msg += fmt.Sprintf(" - did you mean: %s?", strings.Join(close, ", "))
+			// Not a built-in registry entry - try the remote pack
+			// registry before giving up (PACKS_PLAN.md's install
+			// extension). A pack isn't a CMake dependency at all (no
+			// cmaker.yaml/CMakeLists.txt wiring - see runInstallPack's
+			// own doc), so a successful pack install returns here
+			// directly rather than falling through to the
+			// newDeps/cmaker.yaml/cmake-configure logic below.
+			installed, err := tryInstallPack(name)
+			if err != nil {
+				return err
+			}
+			if installed {
+				return nil
+			}
+
+			msg := fmt.Sprintf("%q isn't in cmaker's built-in registry or the packs registry (see 'cmaker search <term>' / 'cmaker search <term> --remote')", name)
+			bareName, _ := splitPackNameVersion(name)
+			var suggestions []string
+			suggestions = append(suggestions, registry.CloseMatches(name)...)
+			suggestions = append(suggestions, remotePackSuggestions(bareName)...)
+			if len(suggestions) > 0 {
+				msg += fmt.Sprintf(" - did you mean: %s?", strings.Join(suggestions, ", "))
 			}
 			msg += "\nFor a library not in the registry, use --git=<url> --tag=<tag> --link=<target>."
 			return fmt.Errorf("%s", msg)
@@ -393,18 +415,54 @@ func runList(licenses bool) error {
 
 // runSearch searches the built-in registry by name/notes and prints
 // matches - "how do I even find a JSON library" made discoverable.
-func runSearch(term string) error {
+func runSearch(term string, remote bool) error {
 	matches := registry.Search(term)
 	if len(matches) == 0 {
 		infof("No registry matches for %q. See 'cmaker install --git=...' for anything not in the built-in registry.", term)
+	} else {
+		for _, e := range matches {
+			source := ""
+			if e.Source != registry.SourceBuiltIn {
+				source = fmt.Sprintf(" [%s]", e.Source)
+			}
+			fmt.Printf("%s%s - %s (%s)\n", e.Name, colorize(ansiYellow, source), e.Notes, e.Repo)
+		}
+	}
+
+	if remote {
+		if err := runSearchRemote(term); err != nil {
+			warnf("remote search failed: %v", err)
+		}
+	}
+	return nil
+}
+
+// runSearchRemote queries the packs registry (see 'cmaker search --remote')
+// - a separate flag-gated step, not folded into the default search,
+// specifically to keep "the built-in curated registry" and "anyone's
+// uploaded pack" from being confused with each other (see PACKS_PLAN.md's
+// own note on this).
+func runSearchRemote(term string) error {
+	token, _, err := packclient.LoadCredentials()
+	if err != nil {
+		return err
+	}
+	if token == "" {
+		return fmt.Errorf("not logged in - run 'cmaker login' first")
+	}
+
+	client := packclient.NewClient("", token)
+	results, err := client.Search(context.Background(), term)
+	if err != nil {
+		return err
+	}
+	if len(results) == 0 {
+		infof("No packs registry matches for %q.", term)
 		return nil
 	}
-	for _, e := range matches {
-		source := ""
-		if e.Source != registry.SourceBuiltIn {
-			source = fmt.Sprintf(" [%s]", e.Source)
-		}
-		fmt.Printf("%s%s - %s (%s)\n", e.Name, colorize(ansiYellow, source), e.Notes, e.Repo)
+	fmt.Println(colorize(ansiBold, "Packs registry (see 'cmaker install <name>'):"))
+	for _, r := range results {
+		fmt.Printf("%s - %s\n", r.Name, r.Description)
 	}
 	return nil
 }

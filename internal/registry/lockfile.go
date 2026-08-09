@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -22,11 +23,26 @@ type LockEntry struct {
 	Commit string `yaml:"commit"`
 }
 
+// PackLock pins the exact version+checksum installed for a pack (see
+// PACKS_PLAN.md) - a different shape from LockEntry deliberately:
+// installing a pack means extracting files per its manifest, not
+// resolving a CPM-fetched commit, so there's no "repo"/"commit" to
+// record, only what was actually installed and when.
+type PackLock struct {
+	Version        string    `yaml:"version"`
+	ChecksumSHA256 string    `yaml:"checksum_sha256"`
+	InstalledAt    time.Time `yaml:"installed_at"`
+}
+
 // Lockfile is cmaker.lock's shape: modeled after Cargo.lock/
 // package-lock.json - human-diffable, meant to be checked into git and
-// regenerated, not hand-edited.
+// regenerated, not hand-edited. Packs is a sibling section alongside
+// Dependencies, not a second lockfile - one file records everything
+// pinned for the project, even though a pack entry is a structurally
+// different shape from a CPM dependency entry.
 type Lockfile struct {
 	Dependencies map[string]LockEntry `yaml:"dependencies"`
+	Packs        map[string]PackLock  `yaml:"packs,omitempty"`
 }
 
 const lockfileName = "cmaker.lock"
@@ -97,7 +113,16 @@ func UpdateLockfile(root string, buildDir string, cfg config.Config) error {
 		return nil
 	}
 
-	lf := Lockfile{Dependencies: map[string]LockEntry{}}
+	// Loaded first (rather than starting from a blank Lockfile) purely to
+	// carry Packs forward - this function only ever regenerates the
+	// Dependencies section from cfg, and previously discarded Packs
+	// entirely on every call, silently wiping out anything RecordPack had
+	// written the moment the next 'cmaker build'/'install'/'uninstall' ran.
+	existing, err := LoadLockfile(root)
+	if err != nil {
+		existing = Lockfile{}
+	}
+	lf := Lockfile{Dependencies: map[string]LockEntry{}, Packs: existing.Packs}
 	var firstErr error
 	for _, dep := range cfg.Dependencies {
 		commit, err := resolvedCommit(buildDir, dep.Name)
@@ -114,4 +139,35 @@ func UpdateLockfile(root string, buildDir string, cfg config.Config) error {
 		return err
 	}
 	return firstErr
+}
+
+// RecordPack pins name@version (and its checksum) into root/cmaker.lock's
+// Packs section - called once a pack install has actually finished
+// extracting successfully (see cmd/install.go). Loads and re-saves the
+// whole lockfile rather than a targeted in-place edit, same as every
+// other lockfile writer here.
+func RecordPack(root, name, version, checksumSHA256 string) error {
+	lf, err := LoadLockfile(root)
+	if err != nil {
+		return err
+	}
+	if lf.Packs == nil {
+		lf.Packs = map[string]PackLock{}
+	}
+	lf.Packs[name] = PackLock{Version: version, ChecksumSHA256: checksumSHA256, InstalledAt: time.Now().UTC()}
+	return SaveLockfile(root, lf)
+}
+
+// RemovePack deletes name from root/cmaker.lock's Packs section - a
+// no-op, not an error, if it wasn't there.
+func RemovePack(root, name string) error {
+	lf, err := LoadLockfile(root)
+	if err != nil {
+		return err
+	}
+	if _, ok := lf.Packs[name]; !ok {
+		return nil
+	}
+	delete(lf.Packs, name)
+	return SaveLockfile(root, lf)
 }

@@ -122,15 +122,23 @@ try {
     Set-Location $repoRoot
 
     # ---------- 4. build ----------
+    #
+    # $githubClientId mirrors Makefile's/.goreleaser.yaml's own
+    # GITHUB_CLIENT_ID - cmaker packs' OAuth App client ID for 'cmaker
+    # login's device flow, a public identifier by GitHub's own design
+    # (device flow needs no client secret), baked into every build the
+    # same way main.version is, so 'cmaker login' works out of the box
+    # here too, not just via `make build`/a goreleaser release.
 
     $version = "dev"
     if (Get-Command git -ErrorAction SilentlyContinue) {
         $described = & git describe --tags --always --dirty 2>$null
         if ($LASTEXITCODE -eq 0 -and $described) { $version = $described }
     }
+    $githubClientId = "Ov23liv0mQqsgNEcXkWZ"
     Info "Building cmaker ($version)..."
     $tempBinary = Join-Path ([System.IO.Path]::GetTempPath()) ("cmaker-build-" + [System.Guid]::NewGuid().ToString("N") + ".exe")
-    & go build -ldflags "-s -w -X main.version=$version" -o $tempBinary .
+    & go build -ldflags "-s -w -X main.version=$version -X cmaker/internal/packclient.GitHubClientID=$githubClientId" -o $tempBinary .
     if ($LASTEXITCODE -ne 0) { Fail "Build failed." }
     Ok "Build succeeded"
 

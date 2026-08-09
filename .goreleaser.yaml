@@ -31,7 +31,12 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X main.version={{.Version}}
+      # GitHubClientID: cmaker packs' OAuth App client ID for 'cmaker
+      # login's device flow - a public identifier by GitHub's own design
+      # (device flow needs no client secret), baked into every release
+      # the same way main.version is, so 'cmaker login' works out of the
+      # box. Mirrors Makefile's own GITHUB_CLIENT_ID for local builds.
+      - -s -w -X main.version={{.Version}} -X cmaker/internal/packclient.GitHubClientID=Ov23liv0mQqsgNEcXkWZ
 
 archives:
   - id: cmaker

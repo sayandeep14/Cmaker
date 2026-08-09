@@ -65,6 +65,83 @@ func TestUpdateLockfileUnfetchedDependencyIsBestEffort(t *testing.T) {
 	}
 }
 
+func TestRecordAndRemovePack(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := RecordPack(dir, "mypack", "1.0.0", "abc123"); err != nil {
+		t.Fatalf("RecordPack() error = %v", err)
+	}
+	lf, err := LoadLockfile(dir)
+	if err != nil {
+		t.Fatalf("LoadLockfile() error = %v", err)
+	}
+	got, ok := lf.Packs["mypack"]
+	if !ok {
+		t.Fatal("expected mypack to be recorded in Packs")
+	}
+	if got.Version != "1.0.0" || got.ChecksumSHA256 != "abc123" {
+		t.Errorf("Packs[mypack] = %+v, unexpected", got)
+	}
+	if got.InstalledAt.IsZero() {
+		t.Error("expected a non-zero InstalledAt")
+	}
+
+	if err := RemovePack(dir, "mypack"); err != nil {
+		t.Fatalf("RemovePack() error = %v", err)
+	}
+	lf, err = LoadLockfile(dir)
+	if err != nil {
+		t.Fatalf("LoadLockfile() error = %v", err)
+	}
+	if _, ok := lf.Packs["mypack"]; ok {
+		t.Error("expected mypack to be removed from Packs")
+	}
+}
+
+func TestRemovePackWhenNotPresent(t *testing.T) {
+	dir := t.TempDir()
+	if err := RemovePack(dir, "doesnotexist"); err != nil {
+		t.Errorf("RemovePack() for an absent pack: error = %v, want nil", err)
+	}
+}
+
+// TestUpdateLockfilePreservesPacks is a regression test for a real bug:
+// UpdateLockfile used to build a brand-new Lockfile{Dependencies: ...}
+// from scratch on every call, silently discarding any Packs section a
+// prior RecordPack had written the moment the next 'cmaker build'/
+// 'install'/'uninstall' ran UpdateLockfile again.
+func TestUpdateLockfilePreservesPacks(t *testing.T) {
+	dir := t.TempDir()
+	if err := RecordPack(dir, "mypack", "1.0.0", "abc123"); err != nil {
+		t.Fatalf("RecordPack() error = %v", err)
+	}
+
+	// No Dependencies - UpdateLockfile should short-circuit as a no-op
+	// (see TestUpdateLockfileNoDependencies), leaving Packs untouched.
+	if err := UpdateLockfile(dir, filepath.Join(dir, "build"), config.Config{}); err != nil {
+		t.Fatalf("UpdateLockfile() error = %v", err)
+	}
+	lf, err := LoadLockfile(dir)
+	if err != nil {
+		t.Fatalf("LoadLockfile() error = %v", err)
+	}
+	if _, ok := lf.Packs["mypack"]; !ok {
+		t.Error("UpdateLockfile() with no dependencies should not touch Packs, but mypack is gone")
+	}
+
+	// With a real (unfetched, so best-effort-failing) dependency, Packs
+	// must still survive the regeneration of Dependencies.
+	cfg := config.Config{Dependencies: []config.Dependency{{Name: "fmt", Repo: "fmtlib/fmt", Tag: "11.0.2"}}}
+	_ = UpdateLockfile(dir, filepath.Join(dir, "build"), cfg) // error expected (unfetched) - only Packs preservation is under test
+	lf, err = LoadLockfile(dir)
+	if err != nil {
+		t.Fatalf("LoadLockfile() error = %v", err)
+	}
+	if _, ok := lf.Packs["mypack"]; !ok {
+		t.Error("UpdateLockfile() wiped out the Packs section while regenerating Dependencies")
+	}
+}
+
 func TestDepSourceDirLowercasesName(t *testing.T) {
 	got := depSourceDir("/build", "Catch2")
 	want := filepath.Join("/build", "_deps", "catch2-src")
