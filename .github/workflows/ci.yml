@@ -9,7 +9,7 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -17,6 +17,29 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
+
+      # The default template targets C++26 (cpp_version: 26), so the
+      # integration tests need a toolchain where CMake knows the C++26 flag:
+      # CMake >= 4.3 (first release mapping C++26 for AppleClang) and, on
+      # Linux, GCC >= 14 (ubuntu-24.04's default g++ 13 has no C++26 mapping).
+      - uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: "4.3.x"
+
+      - name: Use GCC 14 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v g++-14 >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y g++-14
+          fi
+          echo "CC=gcc-14" >> "$GITHUB_ENV"
+          echo "CXX=g++-14" >> "$GITHUB_ENV"
+
+      - name: Toolchain versions
+        run: |
+          cmake --version
+          "${CXX:-c++}" --version
 
       - name: gofmt check
         run: |
